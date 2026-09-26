@@ -23,7 +23,7 @@ Translation directions:
 The app has four bottom navigation tiles:
 
 1. **Перевод** — text translation
-2. **Камера** — live camera / gallery capture, with offline OCR and translation being added incrementally
+2. **Камера** — live camera / gallery capture with offline OCR and staged image translation
 3. **Диалог** — two-way voice conversation translation (later phase)
 4. **Настройки** — translation and camera defaults, local model, app information and **Настройки → История**
 
@@ -56,8 +56,9 @@ Implemented and CI-build verified:
 - no server/API translation fallback
 - no Android `INTERNET` permission
 - Camera stage 1: full-screen CameraX preview, runtime camera permission, photo capture, gallery image selection, rear-camera torch control and language flags
+- Camera OCR stage B1: bundled offline Tesseract OCR for Russian / English / Simplified Chinese, automatic OCR after capture/gallery selection, and text-line bounding boxes over the image
 
-Camera OCR/translation and Dialog mode are the next implementation phases.
+Image translation overlays and Dialog mode are the next implementation phases.
 
 ## Local model
 
@@ -90,6 +91,14 @@ llama.cpp (Android NDK / CMake)
   ↓
 GGUF model in app-private storage
 
+Camera image
+  ↓
+Tesseract OCR (offline)
+  ↓
+recognized text lines + bounding rectangles
+  ↓
+future translated overlay
+
 Settings
   ├─ Translation defaults
   ├─ Camera defaults
@@ -117,8 +126,8 @@ git submodule update --init --recursive
 
 ## Build
 
-The project builds for `arm64-v8a` using Java 17, stable Android API 36, Android NDK and CMake. GitHub Actions runs a debug APK build on pushes to `main` and checks out the llama.cpp submodule recursively.
+The project builds for `arm64-v8a` using Java 17, stable Android API 36, Android NDK and CMake. GitHub Actions runs a debug APK build on pushes to `main`, checks out the llama.cpp submodule recursively, and bundles pinned `tessdata_fast` language files for offline OCR.
 
 ## Privacy / offline principle
 
-The Android manifest does not request Internet access. Translation, model loading, history, speech input/TTS and planned OCR are designed to work locally on the device.
+The Android manifest does not request Internet access. Translation, model loading, history, speech input/TTS and OCR are designed to work locally on the device.
