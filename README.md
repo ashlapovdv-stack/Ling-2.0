@@ -29,9 +29,9 @@ The app has four bottom navigation tiles:
 
 History is intentionally not a separate bottom navigation item.
 
-## Phase 1
+## Phase 1 status
 
-Implemented:
+Implemented and CI-build verified:
 
 - Kotlin + Jetpack Compose + Material 3 UI
 - Russian / English / Chinese language selection
@@ -44,11 +44,14 @@ Implemented:
 - GGUF header validation and copy into app-private storage
 - llama.cpp pinned as a Git submodule
 - Android NDK/CMake JNI bridge
-- on-device model loading and token generation
+- CPU-only on-device model loading and token generation
 - `LlamaTranslationEngine` connected to the Translate button
 - inference runs off the UI thread
+- deterministic translation decoding
+- safe fallback for GGUF files without a supported chat template
 - no server/API translation fallback
 - no Android `INTERNET` permission
+- debug APK successfully built in GitHub Actions with Kotlin + NDK + CMake + llama.cpp
 
 Camera, dialog and voice input are intentionally left for later phases.
 
@@ -64,9 +67,9 @@ For the first MVP:
 4. select the file;
 5. Ling copies it into app-private storage and loads it through llama.cpp.
 
-Initial test target: **Qwen3-0.6B GGUF Q4_K_M**.
+Initial physical-device test target: **Qwen3-0.6B GGUF Q4_K_M**.
 
-The first native build is CPU-only and `arm64-v8a` for broad Android compatibility. GPU acceleration can be evaluated after the baseline translator is stable.
+The first native build is CPU-only and `arm64-v8a`. GPU acceleration can be evaluated after the baseline translator is stable.
 
 ## Architecture
 
@@ -110,7 +113,9 @@ git submodule update --init --recursive
 
 ## Build
 
-The project targets Android arm64 devices and uses Java 17, Android NDK and CMake. GitHub Actions runs a debug APK build on pushes to `main` and checks out the llama.cpp submodule recursively.
+The project currently builds for `arm64-v8a` using Java 17, stable Android API 36, Android NDK and CMake. GitHub Actions runs a debug APK build on pushes to `main` and checks out the llama.cpp submodule recursively.
+
+The remaining phase-1 validation is a physical Android test with a real GGUF model: load the model, run all six language directions, and measure speed/RAM/stability.
 
 ## Privacy / offline principle
 
