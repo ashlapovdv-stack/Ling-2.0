@@ -29,8 +29,8 @@ android {
         applicationId = "com.ling20.translator"
         minSdk = 28
         targetSdk = 36
-        versionCode = 15
-        versionName = "0.1.14"
+        versionCode = 16
+        versionName = "0.1.15"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -131,6 +131,10 @@ dependencies {
     implementation("androidx.camera:camera-camera2:$cameraX")
     implementation("androidx.camera:camera-lifecycle:$cameraX")
     implementation("androidx.camera:camera-view:$cameraX")
+
+    // Tesseract 5.5.1 wrapper. OCR models are bundled as assets by CI, so
+    // recognition remains fully offline at runtime.
+    implementation("com.github.adaptech-cz.Tesseract4Android:tesseract4android:4.9.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
