@@ -7,7 +7,7 @@ plugins {
 
 val prepareLauncherIcon = tasks.register("prepareLauncherIcon") {
     val encodedIcon = layout.projectDirectory.file("src/main/launcher_icon.b64")
-    val outputIcon = layout.projectDirectory.file("src/main/res/mipmap-nodpi/ling_launcher_v2.webp")
+    val outputIcon = layout.projectDirectory.file("src/main/res/mipmap-nodpi/ling_launcher_v3.webp")
 
     inputs.file(encodedIcon)
     outputs.file(outputIcon)
@@ -29,8 +29,8 @@ android {
         applicationId = "com.ling20.translator"
         minSdk = 28
         targetSdk = 36
-        versionCode = 12
-        versionName = "0.1.11"
+        versionCode = 13
+        versionName = "0.1.12"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
