@@ -56,7 +56,7 @@ Implemented and CI-build verified:
 - no server/API translation fallback
 - no Android `INTERNET` permission
 - Camera stage 1: full-screen CameraX preview, runtime camera permission, photo capture, gallery image selection, rear-camera torch control and language flags
-- Camera OCR stage B1: bundled offline Tesseract OCR for Russian / English / Simplified Chinese, automatic OCR after capture/gallery selection, and text-line bounding boxes over the image
+- Camera OCR stage B1: bundled offline Tesseract OCR for Russian / English / Simplified Chinese, automatic OCR after capture/gallery selection, image preprocessing, multi-pass recognition, deduplication and bounded grouping of nearby text lines into overlay-ready blocks
 
 Image translation overlays and Dialog mode are the next implementation phases.
 
@@ -95,7 +95,7 @@ Camera image
   ↓
 Tesseract OCR (offline)
   ↓
-recognized text lines + bounding rectangles
+recognized text lines + grouped bounding rectangles
   ↓
 future translated overlay
 
