@@ -7,6 +7,7 @@ import android.graphics.ImageDecoder
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
@@ -31,7 +32,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CameraAlt
-import androidx.compose.material.icons.filled.Cameraswitch
+import androidx.compose.material.icons.filled.FlashOff
+import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.SwapHoriz
@@ -70,11 +72,12 @@ import java.io.File
 private enum class CameraSourceLanguage(
     val language: Language?,
     val title: String,
+    val symbol: String,
 ) {
-    AUTO(null, "Авто"),
-    RUSSIAN(Language.RUSSIAN, Language.RUSSIAN.displayName),
-    ENGLISH(Language.ENGLISH, Language.ENGLISH.displayName),
-    CHINESE(Language.CHINESE, Language.CHINESE.displayName);
+    AUTO(null, "Авто", "🌐"),
+    RUSSIAN(Language.RUSSIAN, Language.RUSSIAN.displayName, "🇷🇺"),
+    ENGLISH(Language.ENGLISH, Language.ENGLISH.displayName, "🇬🇧"),
+    CHINESE(Language.CHINESE, Language.CHINESE.displayName, "🇨🇳");
 
     companion object {
         fun from(language: Language?): CameraSourceLanguage = when (language) {
@@ -106,7 +109,8 @@ internal fun CameraModeScreen(
     var targetName by rememberSaveable(defaultTarget) { mutableStateOf(defaultTarget.name) }
     var selectedImageUri by rememberSaveable { mutableStateOf<String?>(null) }
     var cameraError by rememberSaveable { mutableStateOf<String?>(null) }
-    var lensFacing by rememberSaveable { mutableStateOf(CameraSelector.LENS_FACING_BACK) }
+    var torchEnabled by rememberSaveable { mutableStateOf(false) }
+    var boundCamera by remember { mutableStateOf<Camera?>(null) }
     var hasCameraPermission by remember {
         mutableStateOf(
             context.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED,
@@ -150,10 +154,15 @@ internal fun CameraModeScreen(
             hasCameraPermission -> {
                 LiveCameraPreview(
                     lifecycleOwner = lifecycleOwner,
-                    lensFacing = lensFacing,
                     onCaptureReady = { imageCapture = it },
+                    onCameraReady = { camera ->
+                        boundCamera = camera
+                        if (camera == null) torchEnabled = false
+                    },
                     onError = {
                         imageCapture = null
+                        boundCamera = null
+                        torchEnabled = false
                         cameraError = it
                     },
                 )
@@ -257,14 +266,17 @@ internal fun CameraModeScreen(
                     )
                 }
             },
-            onSwitchCamera = {
-                selectedImageUri = null
-                imageCapture = null
-                cameraError = null
-                lensFacing = if (lensFacing == CameraSelector.LENS_FACING_BACK) {
-                    CameraSelector.LENS_FACING_FRONT
-                } else {
-                    CameraSelector.LENS_FACING_BACK
+            torchEnabled = torchEnabled,
+            torchAvailable = selectedImageUri == null &&
+                hasCameraPermission &&
+                boundCamera?.cameraInfo?.hasFlashUnit() == true,
+            onToggleTorch = {
+                val camera = boundCamera
+                if (camera != null && camera.cameraInfo.hasFlashUnit()) {
+                    val next = !torchEnabled
+                    camera.cameraControl.enableTorch(next)
+                    torchEnabled = next
+                    cameraError = null
                 }
             },
             modifier = Modifier
@@ -307,9 +319,11 @@ private fun CameraControls(
     hasCameraPermission: Boolean,
     captureReady: Boolean,
     imageSelected: Boolean,
+    torchEnabled: Boolean,
+    torchAvailable: Boolean,
     onGallery: () -> Unit,
     onCapture: () -> Unit,
-    onSwitchCamera: () -> Unit,
+    onToggleTorch: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Row(
@@ -356,11 +370,12 @@ private fun CameraControls(
         }
 
         CameraOverlayAction(
-            icon = Icons.Default.Cameraswitch,
-            label = "Камера",
-            contentDescription = "Переключить переднюю и заднюю камеру",
-            enabled = hasCameraPermission,
-            onClick = onSwitchCamera,
+            icon = if (torchEnabled) Icons.Default.FlashOff else Icons.Default.FlashOn,
+            label = "Фонарик",
+            contentDescription = if (torchEnabled) "Выключить фонарик" else "Включить фонарик",
+            enabled = torchAvailable,
+            active = torchEnabled,
+            onClick = onToggleTorch,
         )
     }
 }
@@ -371,6 +386,7 @@ private fun CameraOverlayAction(
     label: String,
     contentDescription: String,
     enabled: Boolean = true,
+    active: Boolean = false,
     onClick: () -> Unit,
 ) {
     Column(
@@ -382,7 +398,11 @@ private fun CameraOverlayAction(
                 .size(54.dp)
                 .clickable(enabled = enabled, onClick = onClick),
             shape = CircleShape,
-            color = if (enabled) CameraOverlay else CameraOverlay.copy(alpha = 0.45f),
+            color = when {
+                !enabled -> CameraOverlay.copy(alpha = 0.45f)
+                active -> MaterialTheme.colorScheme.primary.copy(alpha = 0.92f)
+                else -> CameraOverlay
+            },
             contentColor = Color.White,
             border = BorderStroke(1.dp, Color.White.copy(alpha = 0.28f)),
         ) {
@@ -406,8 +426,8 @@ private fun CameraOverlayAction(
 @Composable
 private fun LiveCameraPreview(
     lifecycleOwner: androidx.lifecycle.LifecycleOwner,
-    lensFacing: Int,
     onCaptureReady: (ImageCapture?) -> Unit,
+    onCameraReady: (Camera?) -> Unit,
     onError: (String) -> Unit,
 ) {
     val context = LocalContext.current
@@ -418,17 +438,16 @@ private fun LiveCameraPreview(
         }
     }
 
-    DisposableEffect(lifecycleOwner, previewView, lensFacing) {
+    DisposableEffect(lifecycleOwner, previewView) {
         onCaptureReady(null)
+        onCameraReady(null)
         val future = ProcessCameraProvider.getInstance(context)
         val listener = Runnable {
             runCatching {
                 val cameraProvider = future.get()
-                val selector = CameraSelector.Builder()
-                    .requireLensFacing(lensFacing)
-                    .build()
+                val selector = CameraSelector.DEFAULT_BACK_CAMERA
                 check(cameraProvider.hasCamera(selector)) {
-                    "Выбранная камера недоступна на этом устройстве."
+                    "Задняя камера недоступна на этом устройстве."
                 }
 
                 val preview = Preview.Builder().build().also {
@@ -439,15 +458,17 @@ private fun LiveCameraPreview(
                     .build()
 
                 cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(
+                val camera = cameraProvider.bindToLifecycle(
                     lifecycleOwner,
                     selector,
                     preview,
                     capture,
                 )
                 onCaptureReady(capture)
+                onCameraReady(camera)
             }.onFailure { throwable ->
                 onCaptureReady(null)
+                onCameraReady(null)
                 onError(throwable.message ?: "Не удалось открыть камеру.")
             }
         }
@@ -455,6 +476,7 @@ private fun LiveCameraPreview(
 
         onDispose {
             onCaptureReady(null)
+            onCameraReady(null)
             if (future.isDone) {
                 runCatching { future.get().unbindAll() }
             }
@@ -588,6 +610,7 @@ private fun CameraSourcePicker(
     var expanded by remember { mutableStateOf(false) }
     Box(modifier) {
         CameraLanguageSurface(
+            symbol = source.symbol,
             title = source.title,
             onClick = { expanded = true },
         )
@@ -597,9 +620,9 @@ private fun CameraSourcePicker(
                     text = {
                         Text(
                             if (item == CameraSourceLanguage.AUTO) {
-                                "Автоопределение"
+                                "${item.symbol}  Автоопределение"
                             } else {
-                                item.title
+                                "${item.symbol}  ${item.title}"
                             },
                         )
                     },
@@ -622,13 +645,14 @@ private fun CameraTargetPicker(
     var expanded by remember { mutableStateOf(false) }
     Box(modifier) {
         CameraLanguageSurface(
+            symbol = language.cameraFlag(),
             title = language.displayName,
             onClick = { expanded = true },
         )
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             Language.entries.forEach { item ->
                 DropdownMenuItem(
-                    text = { Text(item.displayName) },
+                    text = { Text("${item.cameraFlag()}  ${item.displayName}") },
                     onClick = {
                         expanded = false
                         onSelected(item)
@@ -641,6 +665,7 @@ private fun CameraTargetPicker(
 
 @Composable
 private fun CameraLanguageSurface(
+    symbol: String,
     title: String,
     onClick: () -> Unit,
 ) {
@@ -658,9 +683,12 @@ private fun CameraLanguageSurface(
             modifier = Modifier.padding(horizontal = 15.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            Text(symbol, style = MaterialTheme.typography.titleMedium)
             Text(
                 title,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier
+                    .padding(start = 7.dp)
+                    .weight(1f),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.bodyLarge,
@@ -674,4 +702,10 @@ private fun CameraLanguageSurface(
             )
         }
     }
+}
+
+private fun Language.cameraFlag(): String = when (this) {
+    Language.RUSSIAN -> "🇷🇺"
+    Language.ENGLISH -> "🇬🇧"
+    Language.CHINESE -> "🇨🇳"
 }
