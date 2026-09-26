@@ -7,7 +7,7 @@ plugins {
 
 val prepareLauncherIcon = tasks.register("prepareLauncherIcon") {
     val encodedIcon = layout.projectDirectory.file("src/main/launcher_icon.b64")
-    val outputIcon = layout.projectDirectory.file("src/main/res/mipmap-nodpi/ling_launcher.jpg")
+    val outputIcon = layout.projectDirectory.file("src/main/res/mipmap-nodpi/ling_launcher_v2.webp")
 
     inputs.file(encodedIcon)
     outputs.file(outputIcon)
@@ -29,8 +29,8 @@ android {
         applicationId = "com.ling20.translator"
         minSdk = 28
         targetSdk = 36
-        versionCode = 11
-        versionName = "0.1.10"
+        versionCode = 12
+        versionName = "0.1.11"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -125,6 +125,12 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+
+    val cameraX = "1.6.2"
+    implementation("androidx.camera:camera-core:$cameraX")
+    implementation("androidx.camera:camera-camera2:$cameraX")
+    implementation("androidx.camera:camera-lifecycle:$cameraX")
+    implementation("androidx.camera:camera-view:$cameraX")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
