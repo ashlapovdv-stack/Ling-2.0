@@ -79,11 +79,12 @@ internal object CameraOcrEngine {
                     listOf("rus", "eng", "chi_sim")
                 sourceLanguage == null ->
                     detectDominantLanguage(rawLines)?.let(::listOf).orEmpty()
-                isWeakResult(rawLines) ->
-                    sourceLanguage.fallbackTessLanguages()
-                else -> emptyList()
+                else -> sourceLanguage.fallbackTessLanguages()
             }
 
+            // A mixed model is good at ordinary labels, but a dedicated language
+            // pass often recovers stylised headings or brand names. Run those
+            // precision passes even when the mixed result already looks strong.
             fallbackLanguages.forEach { language ->
                 rawLines += recognizeWithLanguage(
                     dataPath = dataPath,
@@ -91,6 +92,7 @@ internal object CameraOcrEngine {
                     preparedImages = preparedImages,
                     originalWidth = original.width,
                     originalHeight = original.height,
+                    fullPassSet = false,
                 )
             }
 
@@ -125,6 +127,7 @@ internal object CameraOcrEngine {
         preparedImages: List<PreparedImage>,
         originalWidth: Int,
         originalHeight: Int,
+        fullPassSet: Boolean = true,
     ): List<RawOcrLine> {
         val tess = TessBaseAPI()
         return try {
@@ -141,11 +144,19 @@ internal object CameraOcrEngine {
             // Keep a colour pass because global thresholding can erase pale or
             // decorative lettering. Grayscale AUTO handles normal paragraphs,
             // while the binary sparse pass catches small high-contrast fragments.
-            val passes = listOf(
-                preparedImages[0] to TessBaseAPI.PageSegMode.PSM_SPARSE_TEXT,
-                preparedImages[1] to TessBaseAPI.PageSegMode.PSM_AUTO,
-                preparedImages[2] to TessBaseAPI.PageSegMode.PSM_SPARSE_TEXT,
-            )
+            val passes = if (fullPassSet) {
+                listOf(
+                    preparedImages[0] to TessBaseAPI.PageSegMode.PSM_SPARSE_TEXT,
+                    preparedImages[1] to TessBaseAPI.PageSegMode.PSM_AUTO,
+                    preparedImages[2] to TessBaseAPI.PageSegMode.PSM_SPARSE_TEXT,
+                    preparedImages[3] to TessBaseAPI.PageSegMode.PSM_SPARSE_TEXT,
+                )
+            } else {
+                listOf(
+                    preparedImages[0] to TessBaseAPI.PageSegMode.PSM_SPARSE_TEXT,
+                    preparedImages[1] to TessBaseAPI.PageSegMode.PSM_AUTO,
+                )
+            }
 
             passes.forEach { (image, pageSegMode) ->
                 tess.setPageSegMode(pageSegMode)
@@ -180,17 +191,30 @@ internal object CameraOcrEngine {
             imageScale = imageScale,
             originalWidth = originalWidth,
             originalHeight = originalHeight,
+            minConfidence = RAW_MIN_CONFIDENCE,
         )
-        if (lines.isNotEmpty()) return lines
-
-        // Some sparse/decorative labels expose only word-level boxes.
-        return collectIteratorLevel(
+        val words = collectIteratorLevel(
             tess = tess,
             level = TessBaseAPI.PageIteratorLevel.RIL_WORD,
             imageScale = imageScale,
             originalWidth = originalWidth,
             originalHeight = originalHeight,
+            minConfidence = WORD_MIN_CONFIDENCE,
         )
+
+        // Always keep word-level candidates as well. Large isolated words on
+        // packaging (AQUA, SPRAY, 99%) can disappear from TEXTLINE even when
+        // Tesseract has a good word box. Suppress only words already represented
+        // by an equivalent text line.
+        val extraWords = words.filter { word ->
+            val normalizedWord = normalizedText(word.text)
+            lines.none { line ->
+                normalizedWord.isNotEmpty() &&
+                    normalizedText(line.text).contains(normalizedWord) &&
+                    rectContainmentOverlap(line.rect, word.rect) >= WORD_INSIDE_LINE_OVERLAP
+            }
+        }
+        return lines + extraWords
     }
 
     private fun collectIteratorLevel(
@@ -199,6 +223,7 @@ internal object CameraOcrEngine {
         imageScale: Float,
         originalWidth: Int,
         originalHeight: Int,
+        minConfidence: Float,
     ): List<RawOcrLine> {
         val iterator = tess.resultIterator ?: return emptyList()
         val result = mutableListOf<RawOcrLine>()
@@ -213,7 +238,7 @@ internal object CameraOcrEngine {
                 if (
                     text.isMeaningfulOcrText() &&
                     processedRect != null &&
-                    confidence >= RAW_MIN_CONFIDENCE
+                    confidence >= minConfidence
                 ) {
                     val rect = processedRect.toOriginalRect(
                         scale = imageScale,
@@ -251,15 +276,21 @@ internal object CameraOcrEngine {
 
         val enhanced = makeHighContrastGrayscale(scaled, binary = false)
         val binary = makeHighContrastGrayscale(scaled, binary = true)
+        val invertedBinary = makeHighContrastGrayscale(scaled, binary = true, invert = true)
 
         return listOf(
             PreparedImage(scaled, actualScale),
             PreparedImage(enhanced, actualScale),
             PreparedImage(binary, actualScale),
+            PreparedImage(invertedBinary, actualScale),
         )
     }
 
-    private fun makeHighContrastGrayscale(source: Bitmap, binary: Boolean): Bitmap {
+    private fun makeHighContrastGrayscale(
+        source: Bitmap,
+        binary: Boolean,
+        invert: Boolean = false,
+    ): Bitmap {
         val width = source.width
         val height = source.height
         val pixels = IntArray(width * height)
@@ -284,11 +315,12 @@ internal object CameraOcrEngine {
 
         gray.indices.forEach { index ->
             val stretched = ((gray[index] - low) * 255 / (high - low)).coerceIn(0, 255)
-            val value = if (binary) {
+            var value = if (binary) {
                 if (stretched >= otsu) 255 else 0
             } else {
                 stretched
             }
+            if (invert) value = 255 - value
             output[index] = (0xFF shl 24) or (value shl 16) or (value shl 8) or value
         }
 
@@ -761,6 +793,8 @@ internal object CameraOcrEngine {
         .filter(Char::isLetterOrDigit)
 
     private const val RAW_MIN_CONFIDENCE = 10f
+    private const val WORD_MIN_CONFIDENCE = 24f
+    private const val WORD_INSIDE_LINE_OVERLAP = 0.84f
     private const val FINAL_MIN_CONFIDENCE = 20f
     private const val MIN_ALPHANUMERIC_CHARS = 2
     private const val MIN_BOX_PIXELS = 6
