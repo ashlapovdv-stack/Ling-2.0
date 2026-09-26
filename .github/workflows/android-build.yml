@@ -44,12 +44,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TESSDATA_COMMIT="87416418657359cb625c412a48b6e1d6d41c29bd"
+          TESSDATA_COMMIT="e12c65a915945e4c28e237a9b52bc4a8f39a0cec"
           TESSDATA_DIR="app/src/main/assets/tessdata"
           mkdir -p "$TESSDATA_DIR"
           for lang in eng rus chi_sim; do
             curl --fail --location --retry 3 \
-              "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/${TESSDATA_COMMIT}/${lang}.traineddata" \
+              "https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/${TESSDATA_COMMIT}/${lang}.traineddata" \
               --output "${TESSDATA_DIR}/${lang}.traineddata"
             test -s "${TESSDATA_DIR}/${lang}.traineddata"
           done
