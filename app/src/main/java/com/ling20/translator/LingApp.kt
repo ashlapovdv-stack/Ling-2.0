@@ -79,6 +79,25 @@ import java.util.Locale
 private enum class AppSection { TRANSLATE, CAMERA, DIALOG, SETTINGS }
 private enum class SettingsPage { ROOT, MODEL, HISTORY }
 
+private enum class SourceLanguageOption(
+    val language: Language?,
+    val displayName: String,
+    val symbol: String,
+) {
+    AUTO(null, "Авто", "🌐"),
+    RUSSIAN(Language.RUSSIAN, Language.RUSSIAN.displayName, "🇷🇺"),
+    ENGLISH(Language.ENGLISH, Language.ENGLISH.displayName, "🇬🇧"),
+    CHINESE(Language.CHINESE, Language.CHINESE.displayName, "🇨🇳");
+
+    companion object {
+        fun from(language: Language): SourceLanguageOption = when (language) {
+            Language.RUSSIAN -> RUSSIAN
+            Language.ENGLISH -> ENGLISH
+            Language.CHINESE -> CHINESE
+        }
+    }
+}
+
 private val ScreenBackground = Color(0xFFF5F8FC)
 private val CardBorder = Color(0xFFE3E8EF)
 private val ResultBackground = Color(0xFFEAF2FF)
@@ -99,14 +118,14 @@ fun LingApp(
     var modelLoading by remember { mutableStateOf(true) }
     var modelError by remember { mutableStateOf<String?>(null) }
 
-    // Translation state is kept above the tabs so switching modes never clears it.
-    var sourceName by rememberSaveable { mutableStateOf(Language.RUSSIAN.name) }
+    // Translator state is kept above the tabs, so mode switches never clear it.
+    var sourceOptionName by rememberSaveable { mutableStateOf(SourceLanguageOption.RUSSIAN.name) }
     var targetName by rememberSaveable { mutableStateOf(Language.ENGLISH.name) }
     var input by rememberSaveable { mutableStateOf("") }
     var output by rememberSaveable { mutableStateOf("") }
     var translating by remember { mutableStateOf(false) }
 
-    val source = Language.valueOf(sourceName)
+    val sourceOption = SourceLanguageOption.valueOf(sourceOptionName)
     val target = Language.valueOf(targetName)
 
     fun syncEngine() {
@@ -137,32 +156,40 @@ fun LingApp(
         Box(Modifier.fillMaxSize().padding(padding)) {
             when (section) {
                 AppSection.TRANSLATE -> TranslatorScreen(
-                    source = source,
+                    source = sourceOption,
                     target = target,
                     input = input,
                     output = output,
                     translating = translating,
                     modelLoading = modelLoading,
                     onSourceSelected = { chosen ->
-                        sourceName = chosen.name
-                        if (chosen == target) {
-                            targetName = Language.entries.first { it != chosen }.name
+                        sourceOptionName = chosen.name
+                        val explicit = chosen.language
+                        if (explicit != null && explicit == target) {
+                            targetName = Language.entries.first { it != explicit }.name
                         }
                     },
                     onTargetSelected = { chosen ->
                         targetName = chosen.name
-                        if (chosen == source) {
-                            sourceName = Language.entries.first { it != chosen }.name
+                        if (sourceOption.language == chosen) {
+                            sourceOptionName = SourceLanguageOption.from(
+                                Language.entries.first { it != chosen },
+                            ).name
                         }
                     },
                     onSwap = {
-                        val oldSource = sourceName
-                        sourceName = targetName
-                        targetName = oldSource
-                        if (output.isNotBlank() && engineReady) {
-                            val oldInput = input
-                            input = output
-                            output = oldInput
+                        val actualSource = sourceOption.language ?: runCatching {
+                            detectSupportedLanguage(input)
+                        }.getOrNull()
+
+                        if (actualSource != null && actualSource != target) {
+                            sourceOptionName = SourceLanguageOption.from(target).name
+                            targetName = actualSource.name
+                            if (output.isNotBlank() && engineReady) {
+                                val oldInput = input
+                                input = output
+                                output = oldInput
+                            }
                         }
                     },
                     onInputChanged = { value ->
@@ -176,31 +203,42 @@ fun LingApp(
                         if (!engineReady) {
                             output = "Откройте Настройки → Локальная модель и выберите GGUF-файл."
                         } else if (clean.isNotEmpty() && !translating) {
-                            translating = true
-                            output = ""
-                            val translateSource = source
-                            val translateTarget = target
-                            appScope.launch {
-                                val result = withContext(Dispatchers.Default) {
-                                    runCatching {
-                                        engine.translate(clean, translateSource, translateTarget)
+                            val resolvedSource = runCatching {
+                                sourceOption.language ?: detectSupportedLanguage(clean)
+                            }
+
+                            resolvedSource.onFailure { error ->
+                                output = error.message ?: "Не удалось определить язык исходного текста."
+                            }.onSuccess { translateSource ->
+                                if (translateSource == target) {
+                                    output = "Определённый язык совпадает с языком перевода. Выберите другой язык результата."
+                                } else {
+                                    translating = true
+                                    output = ""
+                                    val translateTarget = target
+                                    appScope.launch {
+                                        val result = withContext(Dispatchers.Default) {
+                                            runCatching {
+                                                engine.translate(clean, translateSource, translateTarget)
+                                            }
+                                        }
+                                        result.onSuccess { translated ->
+                                            output = translated
+                                            if (translated.isNotBlank()) {
+                                                historyRepository.add(
+                                                    translateSource,
+                                                    translateTarget,
+                                                    clean,
+                                                    translated,
+                                                )
+                                                history = historyRepository.load()
+                                            }
+                                        }.onFailure { error ->
+                                            output = "Ошибка перевода: ${error.message ?: "неизвестная ошибка"}"
+                                        }
+                                        translating = false
                                     }
                                 }
-                                result.onSuccess { translated ->
-                                    output = translated
-                                    if (translated.isNotBlank()) {
-                                        historyRepository.add(
-                                            translateSource,
-                                            translateTarget,
-                                            clean,
-                                            translated,
-                                        )
-                                        history = historyRepository.load()
-                                    }
-                                }.onFailure { error ->
-                                    output = "Ошибка перевода: ${error.message ?: "неизвестная ошибка"}"
-                                }
-                                translating = false
                             }
                         }
                     },
@@ -257,13 +295,13 @@ fun LingApp(
 
 @Composable
 private fun TranslatorScreen(
-    source: Language,
+    source: SourceLanguageOption,
     target: Language,
     input: String,
     output: String,
     translating: Boolean,
     modelLoading: Boolean,
-    onSourceSelected: (Language) -> Unit,
+    onSourceSelected: (SourceLanguageOption) -> Unit,
     onTargetSelected: (Language) -> Unit,
     onSwap: () -> Unit,
     onInputChanged: (String) -> Unit,
@@ -284,6 +322,7 @@ private fun TranslatorScreen(
             source = source,
             target = target,
             enabled = !translating,
+            swapEnabled = !translating && (source != SourceLanguageOption.AUTO || input.isNotBlank()),
             onSourceSelected = onSourceSelected,
             onTargetSelected = onTargetSelected,
             onSwap = onSwap,
@@ -293,12 +332,21 @@ private fun TranslatorScreen(
             input = input,
             enabled = !translating,
             onInputChanged = onInputChanged,
+            onCopy = {
+                if (input.isNotBlank()) {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("Ling source", input))
+                    Toast.makeText(context, "Исходный текст скопирован", Toast.LENGTH_SHORT).show()
+                }
+            },
             onClear = onClearInput,
         )
 
         Button(
             onClick = onTranslate,
-            enabled = input.isNotBlank() && source != target && !translating && !modelLoading,
+            enabled = input.isNotBlank() &&
+                (source.language == null || source.language != target) &&
+                !translating && !modelLoading,
             modifier = Modifier.fillMaxWidth().height(58.dp),
             shape = RoundedCornerShape(18.dp),
         ) {
@@ -344,10 +392,11 @@ private fun TranslatorScreen(
 
 @Composable
 private fun LanguageRow(
-    source: Language,
+    source: SourceLanguageOption,
     target: Language,
     enabled: Boolean,
-    onSourceSelected: (Language) -> Unit,
+    swapEnabled: Boolean,
+    onSourceSelected: (SourceLanguageOption) -> Unit,
     onTargetSelected: (Language) -> Unit,
     onSwap: () -> Unit,
 ) {
@@ -356,8 +405,8 @@ private fun LanguageRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(9.dp),
     ) {
-        LanguagePicker(
-            language = source,
+        SourceLanguagePicker(
+            source = source,
             enabled = enabled,
             onSelected = onSourceSelected,
             modifier = Modifier.weight(1f),
@@ -366,10 +415,10 @@ private fun LanguageRow(
         Surface(
             modifier = Modifier
                 .size(46.dp)
-                .clickable(enabled = enabled, onClick = onSwap),
+                .clickable(enabled = swapEnabled, onClick = onSwap),
             shape = CircleShape,
             color = Color(0xFFE5EEFC),
-            contentColor = MaterialTheme.colorScheme.primary,
+            contentColor = if (swapEnabled) MaterialTheme.colorScheme.primary else Color(0xFF98A2B3),
         ) {
             Box(contentAlignment = Alignment.Center) {
                 Icon(
@@ -386,6 +435,72 @@ private fun LanguageRow(
             onSelected = onTargetSelected,
             modifier = Modifier.weight(1f),
         )
+    }
+}
+
+@Composable
+private fun SourceLanguagePicker(
+    source: SourceLanguageOption,
+    enabled: Boolean,
+    onSelected: (SourceLanguageOption) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    Box(modifier = modifier) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(52.dp)
+                .clickable(enabled = enabled) { expanded = true },
+            shape = RoundedCornerShape(17.dp),
+            color = Color.White,
+            border = BorderStroke(1.dp, CardBorder),
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 13.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(source.symbol, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    source.displayName,
+                    modifier = Modifier.padding(start = 7.dp).weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Icon(
+                    Icons.Default.ExpandMore,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            SourceLanguageOption.entries.forEach { item ->
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            if (item == SourceLanguageOption.AUTO) {
+                                "${item.symbol}  Автоопределение"
+                            } else {
+                                "${item.symbol}  ${item.displayName}"
+                            },
+                        )
+                    },
+                    onClick = {
+                        expanded = false
+                        onSelected(item)
+                    },
+                )
+            }
+        }
     }
 }
 
@@ -452,6 +567,7 @@ private fun InputCard(
     input: String,
     enabled: Boolean,
     onInputChanged: (String) -> Unit,
+    onCopy: () -> Unit,
     onClear: () -> Unit,
 ) {
     Card(
@@ -525,6 +641,15 @@ private fun InputCard(
                     )
                 }
                 Spacer(Modifier.weight(1f))
+                IconButton(
+                    enabled = enabled && input.isNotEmpty(),
+                    onClick = onCopy,
+                ) {
+                    Icon(
+                        Icons.Default.ContentCopy,
+                        contentDescription = "Копировать исходный текст",
+                    )
+                }
                 IconButton(
                     enabled = enabled && input.isNotEmpty(),
                     onClick = onClear,
@@ -664,6 +789,32 @@ private fun Language.flag() = when (this) {
     Language.RUSSIAN -> "🇷🇺"
     Language.ENGLISH -> "🇬🇧"
     Language.CHINESE -> "🇨🇳"
+}
+
+private fun detectSupportedLanguage(text: String): Language {
+    var cyrillic = 0
+    var latin = 0
+    var han = 0
+
+    text.forEach { character ->
+        when {
+            character in '\u0400'..'\u04FF' -> cyrillic++
+            character in '\u4E00'..'\u9FFF' ||
+                character in '\u3400'..'\u4DBF' -> han++
+            character in 'A'..'Z' || character in 'a'..'z' -> latin++
+        }
+    }
+
+    val max = maxOf(cyrillic, latin, han)
+    require(max > 0) {
+        "Не удалось определить язык. Выберите Русский, English или 中文 вручную."
+    }
+
+    return when (max) {
+        cyrillic -> Language.RUSSIAN
+        han -> Language.CHINESE
+        else -> Language.ENGLISH
+    }
 }
 
 @Composable
