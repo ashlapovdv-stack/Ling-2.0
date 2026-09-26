@@ -15,13 +15,13 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -31,17 +31,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.PhotoLibrary
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -56,6 +53,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -72,12 +70,11 @@ import java.io.File
 private enum class CameraSourceLanguage(
     val language: Language?,
     val title: String,
-    val symbol: String,
 ) {
-    AUTO(null, "Авто", "🌐"),
-    RUSSIAN(Language.RUSSIAN, Language.RUSSIAN.displayName, "🇷🇺"),
-    ENGLISH(Language.ENGLISH, Language.ENGLISH.displayName, "🇬🇧"),
-    CHINESE(Language.CHINESE, Language.CHINESE.displayName, "🇨🇳");
+    AUTO(null, "Авто"),
+    RUSSIAN(Language.RUSSIAN, Language.RUSSIAN.displayName),
+    ENGLISH(Language.ENGLISH, Language.ENGLISH.displayName),
+    CHINESE(Language.CHINESE, Language.CHINESE.displayName);
 
     companion object {
         fun from(language: Language?): CameraSourceLanguage = when (language) {
@@ -89,8 +86,8 @@ private enum class CameraSourceLanguage(
     }
 }
 
-private val CameraScreenBackground = Color(0xFFF5F8FC)
-private val CameraCardBorder = Color(0xFFE3E8EF)
+private val CameraOverlay = Color(0xC91B2736)
+private val CameraOverlayStrong = Color(0xE01B2736)
 
 @Composable
 internal fun CameraModeScreen(
@@ -98,6 +95,8 @@ internal fun CameraModeScreen(
     defaultTarget: Language,
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+
     var sourceName by rememberSaveable {
         mutableStateOf(
             if (defaultSource == defaultTarget) CameraSourceLanguage.AUTO.name
@@ -107,16 +106,80 @@ internal fun CameraModeScreen(
     var targetName by rememberSaveable { mutableStateOf(defaultTarget.name) }
     var selectedImageUri by rememberSaveable { mutableStateOf<String?>(null) }
     var cameraError by rememberSaveable { mutableStateOf<String?>(null) }
+    var lensFacing by rememberSaveable { mutableStateOf(CameraSelector.LENS_FACING_BACK) }
+    var hasCameraPermission by remember {
+        mutableStateOf(
+            context.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED,
+        )
+    }
+    var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
 
     val source = CameraSourceLanguage.valueOf(sourceName)
     val target = Language.valueOf(targetName)
 
-    Column(
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        hasCameraPermission = granted
+        cameraError = if (granted) null else "Для съёмки нужно разрешить доступ к камере."
+    }
+
+    val galleryLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent(),
+    ) { uri ->
+        if (uri != null) {
+            selectedImageUri = uri.toString()
+            cameraError = null
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        if (!hasCameraPermission) permissionLauncher.launch(Manifest.permission.CAMERA)
+    }
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 18.dp, vertical = 14.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+            .background(Color.Black),
     ) {
+        when {
+            selectedImageUri != null -> {
+                SelectedCameraImage(selectedImageUri!!)
+            }
+
+            hasCameraPermission -> {
+                LiveCameraPreview(
+                    lifecycleOwner = lifecycleOwner,
+                    lensFacing = lensFacing,
+                    onCaptureReady = { imageCapture = it },
+                    onError = {
+                        imageCapture = null
+                        cameraError = it
+                    },
+                )
+            }
+
+            else -> {
+                CameraPermissionState(
+                    onRequestPermission = {
+                        permissionLauncher.launch(Manifest.permission.CAMERA)
+                    },
+                )
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .height(132.dp)
+                .background(
+                    Brush.verticalGradient(
+                        listOf(Color.Black.copy(alpha = 0.58f), Color.Transparent),
+                    ),
+                ),
+        )
+
         CameraLanguageRow(
             source = source,
             target = target,
@@ -139,228 +202,212 @@ internal fun CameraModeScreen(
                     targetName = explicitSource.name
                 }
             },
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(horizontal = 16.dp, vertical = 14.dp),
         )
 
-        CameraCaptureCard(
-            selectedImageUri = selectedImageUri,
-            error = cameraError,
-            onImageSelected = { uri ->
-                selectedImageUri = uri?.toString()
-                cameraError = null
-            },
-            onError = { cameraError = it },
-        )
-
-        if (selectedImageUri != null) {
+        if (cameraError != null) {
             Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(18.dp),
-                color = Color(0xFFEAF2FF),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 78.dp, start = 18.dp, end = 18.dp),
+                shape = RoundedCornerShape(14.dp),
+                color = Color(0xD9B42318),
+                contentColor = Color.White,
             ) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Text(
-                        "Фото готово",
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                    Text(
-                        "Следующий этап — офлайн OCR: распознавание RU / EN / 中文, редактирование текста и перевод.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                Text(
+                    cameraError!!,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
         }
 
-        Spacer(Modifier.height(2.dp))
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height(170.dp)
+                .background(
+                    Brush.verticalGradient(
+                        listOf(Color.Transparent, Color.Black.copy(alpha = 0.68f)),
+                    ),
+                ),
+        )
+
+        CameraControls(
+            hasCameraPermission = hasCameraPermission,
+            captureReady = imageCapture != null,
+            imageSelected = selectedImageUri != null,
+            onGallery = { galleryLauncher.launch("image/*") },
+            onCapture = {
+                if (selectedImageUri != null) {
+                    selectedImageUri = null
+                    cameraError = null
+                } else {
+                    captureCameraPhoto(
+                        context = context,
+                        imageCapture = imageCapture,
+                        onImageSelected = { uri ->
+                            selectedImageUri = uri?.toString()
+                            cameraError = null
+                        },
+                        onError = { cameraError = it },
+                    )
+                }
+            },
+            onSwitchCamera = {
+                selectedImageUri = null
+                imageCapture = null
+                cameraError = null
+                lensFacing = if (lensFacing == CameraSelector.LENS_FACING_BACK) {
+                    CameraSelector.LENS_FACING_FRONT
+                } else {
+                    CameraSelector.LENS_FACING_BACK
+                }
+            },
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(horizontal = 24.dp, vertical = 18.dp),
+        )
     }
 }
 
 @Composable
-private fun CameraCaptureCard(
-    selectedImageUri: String?,
-    error: String?,
-    onImageSelected: (Uri?) -> Unit,
-    onError: (String) -> Unit,
-) {
-    val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
-    var hasCameraPermission by remember {
-        mutableStateOf(
-            context.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED,
-        )
-    }
-    var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
-
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) { granted ->
-        hasCameraPermission = granted
-        if (!granted) onError("Для съёмки нужно разрешить доступ к камере.")
-    }
-
-    val galleryLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.GetContent(),
-    ) { uri ->
-        if (uri != null) onImageSelected(uri)
-    }
-
-    LaunchedEffect(Unit) {
-        if (!hasCameraPermission) permissionLauncher.launch(Manifest.permission.CAMERA)
-    }
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+private fun CameraPermissionState(onRequestPermission: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
     ) {
-        Column(
-            modifier = Modifier.padding(10.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+        Icon(
+            Icons.Default.CameraAlt,
+            contentDescription = null,
+            modifier = Modifier.size(52.dp),
+            tint = Color.White,
+        )
+        Spacer(Modifier.height(14.dp))
+        Text(
+            "Нужен доступ к камере",
+            color = Color.White,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Spacer(Modifier.height(12.dp))
+        Button(onClick = onRequestPermission) {
+            Text("Разрешить")
+        }
+    }
+}
+
+@Composable
+private fun CameraControls(
+    hasCameraPermission: Boolean,
+    captureReady: Boolean,
+    imageSelected: Boolean,
+    onGallery: () -> Unit,
+    onCapture: () -> Unit,
+    onSwitchCamera: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        CameraOverlayAction(
+            icon = Icons.Default.PhotoLibrary,
+            label = "Галерея",
+            contentDescription = "Выбрать изображение из галереи",
+            onClick = onGallery,
+        )
+
+        Surface(
+            modifier = Modifier
+                .size(82.dp)
+                .clickable(
+                    enabled = imageSelected || (hasCameraPermission && captureReady),
+                    onClick = onCapture,
+                ),
+            shape = CircleShape,
+            color = Color.Transparent,
+            border = BorderStroke(
+                4.dp,
+                if (imageSelected || (hasCameraPermission && captureReady)) {
+                    Color.White
+                } else {
+                    Color.White.copy(alpha = 0.38f)
+                },
+            ),
         ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(0.75f),
-                contentAlignment = Alignment.Center,
-            ) {
-                when {
-                    selectedImageUri != null -> {
-                        SelectedCameraImage(selectedImageUri)
-                    }
-
-                    hasCameraPermission -> {
-                        LiveCameraPreview(
-                            lifecycleOwner = lifecycleOwner,
-                            onCaptureReady = { imageCapture = it },
-                            onError = onError,
-                        )
-                        Surface(
-                            modifier = Modifier
-                                .fillMaxWidth(0.80f)
-                                .aspectRatio(0.80f),
-                            shape = RoundedCornerShape(22.dp),
-                            color = Color.Transparent,
-                            border = BorderStroke(2.dp, Color.White.copy(alpha = 0.78f)),
-                        ) {}
-                    }
-
-                    else -> {
-                        Surface(
-                            modifier = Modifier.fillMaxSize(),
-                            shape = RoundedCornerShape(20.dp),
-                            color = Color(0xFFF0F4F9),
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(24.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center,
-                            ) {
-                                Icon(
-                                    Icons.Default.CameraAlt,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(44.dp),
-                                    tint = Color(0xFF667085),
-                                )
-                                Spacer(Modifier.height(12.dp))
-                                Text(
-                                    "Нужен доступ к камере",
-                                    fontWeight = FontWeight.SemiBold,
-                                )
-                                Spacer(Modifier.height(10.dp))
-                                Button(onClick = {
-                                    permissionLauncher.launch(Manifest.permission.CAMERA)
-                                }) {
-                                    Text("Разрешить")
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (error != null) {
-                Text(
-                    error,
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(horizontal = 6.dp),
-                )
-            }
-
-            if (selectedImageUri == null) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                ) {
-                    CameraRoundAction(
-                        icon = Icons.Default.PhotoLibrary,
-                        contentDescription = "Выбрать изображение из галереи",
-                        onClick = { galleryLauncher.launch("image/*") },
-                    )
-
-                    Surface(
-                        modifier = Modifier
-                            .size(76.dp)
-                            .clickable(enabled = hasCameraPermission && imageCapture != null) {
-                                captureCameraPhoto(
-                                    context = context,
-                                    imageCapture = imageCapture,
-                                    onImageSelected = onImageSelected,
-                                    onError = onError,
-                                )
-                            },
-                        shape = CircleShape,
-                        color = if (hasCameraPermission && imageCapture != null) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            Color(0xFFD0D5DD)
-                        },
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Surface(
-                                modifier = Modifier.size(58.dp),
-                                shape = CircleShape,
-                                color = Color.White,
-                            ) {}
-                        }
-                    }
-
-                    Box(Modifier.size(48.dp))
-                }
-            } else {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    Button(
-                        onClick = { onImageSelected(null) },
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Icon(Icons.Default.Refresh, contentDescription = null)
-                        Text("  Переснять")
-                    }
-                    CameraRoundAction(
-                        icon = Icons.Default.PhotoLibrary,
-                        contentDescription = "Выбрать другое изображение",
-                        onClick = { galleryLauncher.launch("image/*") },
-                    )
-                }
+            Box(contentAlignment = Alignment.Center) {
+                Surface(
+                    modifier = Modifier.size(64.dp),
+                    shape = CircleShape,
+                    color = if (imageSelected || (hasCameraPermission && captureReady)) {
+                        Color.White
+                    } else {
+                        Color.White.copy(alpha = 0.42f)
+                    },
+                ) {}
             }
         }
+
+        CameraOverlayAction(
+            icon = Icons.Default.Cameraswitch,
+            label = "Камера",
+            contentDescription = "Переключить переднюю и заднюю камеру",
+            enabled = hasCameraPermission,
+            onClick = onSwitchCamera,
+        )
+    }
+}
+
+@Composable
+private fun CameraOverlayAction(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    contentDescription: String,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        Surface(
+            modifier = Modifier
+                .size(54.dp)
+                .clickable(enabled = enabled, onClick = onClick),
+            shape = CircleShape,
+            color = if (enabled) CameraOverlay else CameraOverlay.copy(alpha = 0.45f),
+            contentColor = Color.White,
+            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.28f)),
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    icon,
+                    contentDescription = contentDescription,
+                    modifier = Modifier.size(27.dp),
+                )
+            }
+        }
+        Text(
+            label,
+            color = Color.White,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
     }
 }
 
 @Composable
 private fun LiveCameraPreview(
     lifecycleOwner: androidx.lifecycle.LifecycleOwner,
-    onCaptureReady: (ImageCapture) -> Unit,
+    lensFacing: Int,
+    onCaptureReady: (ImageCapture?) -> Unit,
     onError: (String) -> Unit,
 ) {
     val context = LocalContext.current
@@ -371,11 +418,19 @@ private fun LiveCameraPreview(
         }
     }
 
-    DisposableEffect(lifecycleOwner, previewView) {
+    DisposableEffect(lifecycleOwner, previewView, lensFacing) {
+        onCaptureReady(null)
         val future = ProcessCameraProvider.getInstance(context)
         val listener = Runnable {
             runCatching {
                 val cameraProvider = future.get()
+                val selector = CameraSelector.Builder()
+                    .requireLensFacing(lensFacing)
+                    .build()
+                check(cameraProvider.hasCamera(selector)) {
+                    "Выбранная камера недоступна на этом устройстве."
+                }
+
                 val preview = Preview.Builder().build().also {
                     it.surfaceProvider = previewView.surfaceProvider
                 }
@@ -386,18 +441,20 @@ private fun LiveCameraPreview(
                 cameraProvider.unbindAll()
                 cameraProvider.bindToLifecycle(
                     lifecycleOwner,
-                    CameraSelector.DEFAULT_BACK_CAMERA,
+                    selector,
                     preview,
                     capture,
                 )
                 onCaptureReady(capture)
             }.onFailure { throwable ->
+                onCaptureReady(null)
                 onError(throwable.message ?: "Не удалось открыть камеру.")
             }
         }
         future.addListener(listener, context.mainExecutor)
 
         onDispose {
+            onCaptureReady(null)
             if (future.isDone) {
                 runCatching { future.get().unbindAll() }
             }
@@ -458,43 +515,20 @@ private fun SelectedCameraImage(uriString: String) {
         }
     }
 
-    Surface(
-        modifier = Modifier.fillMaxSize(),
-        shape = RoundedCornerShape(20.dp),
-        color = Color(0xFF101828),
-    ) {
-        val image = bitmap
-        if (image != null) {
-            Image(
-                bitmap = image,
-                contentDescription = "Выбранное изображение",
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Fit,
-            )
-        } else {
-            Box(contentAlignment = Alignment.Center) {
-                Text("Загружаю изображение…", color = Color.White)
-            }
-        }
-    }
-}
-
-@Composable
-private fun CameraRoundAction(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    contentDescription: String,
-    onClick: () -> Unit,
-) {
-    Surface(
-        modifier = Modifier
-            .size(48.dp)
-            .clickable(onClick = onClick),
-        shape = CircleShape,
-        color = Color(0xFFF0F4F9),
-        contentColor = Color(0xFF667085),
-    ) {
-        Box(contentAlignment = Alignment.Center) {
-            Icon(icon, contentDescription = contentDescription)
+    val image = bitmap
+    if (image != null) {
+        Image(
+            bitmap = image,
+            contentDescription = "Выбранное изображение",
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Fit,
+        )
+    } else {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text("Загружаю изображение…", color = Color.White)
         }
     }
 }
@@ -506,33 +540,37 @@ private fun CameraLanguageRow(
     onSourceSelected: (CameraSourceLanguage) -> Unit,
     onTargetSelected: (Language) -> Unit,
     onSwap: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(9.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         CameraSourcePicker(
             source = source,
             onSelected = onSourceSelected,
             modifier = Modifier.weight(1f),
         )
+
         Surface(
             modifier = Modifier
-                .size(46.dp)
+                .size(42.dp)
                 .clickable(enabled = source.language != null, onClick = onSwap),
             shape = CircleShape,
-            color = Color(0xFFE5EEFC),
-            contentColor = if (source.language != null) {
-                MaterialTheme.colorScheme.primary
-            } else {
-                Color(0xFF98A2B3)
-            },
+            color = CameraOverlayStrong,
+            contentColor = if (source.language != null) Color.White else Color.White.copy(alpha = 0.42f),
+            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
         ) {
             Box(contentAlignment = Alignment.Center) {
-                Icon(Icons.Default.SwapHoriz, contentDescription = "Поменять языки")
+                Icon(
+                    Icons.Default.SwapHoriz,
+                    contentDescription = "Поменять языки",
+                    modifier = Modifier.size(23.dp),
+                )
             }
         }
+
         CameraTargetPicker(
             language = target,
             onSelected = onTargetSelected,
@@ -550,7 +588,6 @@ private fun CameraSourcePicker(
     var expanded by remember { mutableStateOf(false) }
     Box(modifier) {
         CameraLanguageSurface(
-            symbol = source.symbol,
             title = source.title,
             onClick = { expanded = true },
         )
@@ -560,9 +597,9 @@ private fun CameraSourcePicker(
                     text = {
                         Text(
                             if (item == CameraSourceLanguage.AUTO) {
-                                "${item.symbol}  Автоопределение"
+                                "Автоопределение"
                             } else {
-                                "${item.symbol}  ${item.title}"
+                                item.title
                             },
                         )
                     },
@@ -585,14 +622,13 @@ private fun CameraTargetPicker(
     var expanded by remember { mutableStateOf(false) }
     Box(modifier) {
         CameraLanguageSurface(
-            symbol = language.cameraFlag(),
             title = language.displayName,
             onClick = { expanded = true },
         )
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             Language.entries.forEach { item ->
                 DropdownMenuItem(
-                    text = { Text("${item.cameraFlag()}  ${item.displayName}") },
+                    text = { Text(item.displayName) },
                     onClick = {
                         expanded = false
                         onSelected(item)
@@ -605,46 +641,37 @@ private fun CameraTargetPicker(
 
 @Composable
 private fun CameraLanguageSurface(
-    symbol: String,
     title: String,
     onClick: () -> Unit,
 ) {
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .height(52.dp)
+            .height(50.dp)
             .clickable(onClick = onClick),
-        shape = RoundedCornerShape(17.dp),
-        color = Color.White,
-        border = BorderStroke(1.dp, CameraCardBorder),
+        shape = RoundedCornerShape(18.dp),
+        color = CameraOverlayStrong,
+        contentColor = Color.White,
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 13.dp),
+            modifier = Modifier.padding(horizontal = 15.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(symbol, style = MaterialTheme.typography.titleMedium)
             Text(
                 title,
-                modifier = Modifier
-                    .padding(start = 7.dp)
-                    .weight(1f),
+                modifier = Modifier.weight(1f),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.SemiBold,
             )
             Icon(
                 Icons.Default.ExpandMore,
                 contentDescription = null,
                 modifier = Modifier.size(20.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                tint = Color.White.copy(alpha = 0.72f),
             )
         }
     }
-}
-
-private fun Language.cameraFlag(): String = when (this) {
-    Language.RUSSIAN -> "🇷🇺"
-    Language.ENGLISH -> "🇬🇧"
-    Language.CHINESE -> "🇨🇳"
 }
