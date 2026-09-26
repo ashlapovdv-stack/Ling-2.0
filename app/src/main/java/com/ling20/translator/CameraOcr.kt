@@ -54,13 +54,12 @@ internal object CameraOcrEngine {
         sourceLanguage: Language?,
     ): CameraOcrResult = withContext(Dispatchers.Default) {
         val original = loadCameraBitmap(context, uriString)
-        val primaryLanguage = sourceLanguage.toTessLanguage()
-        val allRequiredLanguages = if (sourceLanguage == null) {
-            setOf("rus", "eng", "chi_sim")
-        } else {
-            setOf(primaryLanguage)
-        }
-        val dataPath = prepareTessData(context, allRequiredLanguages)
+        // OCR is deliberately multilingual even when the user selects a source
+        // language. Product labels frequently mix Russian/Chinese with English
+        // brand names, numbers and short Latin phrases. The selected language is
+        // still placed first so Tesseract gives it priority.
+        val primaryLanguage = sourceLanguage.toTessLanguageSpec()
+        val dataPath = prepareTessData(context, setOf("rus", "eng", "chi_sim"))
         val preparedImages = prepareImages(original)
 
         try {
@@ -73,28 +72,26 @@ internal object CameraOcrEngine {
                 originalHeight = original.height,
             )
 
-            // AUTO gets a second language-specific attempt. It noticeably helps
-            // labels/signs where one script dominates but the combined model is
-            // distracted by decorative fonts or mixed text.
-            if (sourceLanguage == null) {
-                val dominant = detectDominantLanguage(rawLines)
-                val fallbackLanguages = if (isWeakResult(rawLines)) {
+            // If the combined pass is weak, retry individual scripts. AUTO can
+            // also use the dominant detected script as a precision pass.
+            val fallbackLanguages = when {
+                sourceLanguage == null && isWeakResult(rawLines) ->
                     listOf("rus", "eng", "chi_sim")
-                } else {
-                    dominant?.let(::listOf).orEmpty()
-                }
+                sourceLanguage == null ->
+                    detectDominantLanguage(rawLines)?.let(::listOf).orEmpty()
+                isWeakResult(rawLines) ->
+                    sourceLanguage.fallbackTessLanguages()
+                else -> emptyList()
+            }
 
-                fallbackLanguages
-                    .filter { it != primaryLanguage }
-                    .forEach { language ->
-                        rawLines += recognizeWithLanguage(
-                            dataPath = dataPath,
-                            languageSpec = language,
-                            preparedImages = preparedImages,
-                            originalWidth = original.width,
-                            originalHeight = original.height,
-                        )
-                    }
+            fallbackLanguages.forEach { language ->
+                rawLines += recognizeWithLanguage(
+                    dataPath = dataPath,
+                    languageSpec = language,
+                    preparedImages = preparedImages,
+                    originalWidth = original.width,
+                    originalHeight = original.height,
+                )
             }
 
             val deduplicated = deduplicateLines(rawLines)
@@ -141,11 +138,13 @@ internal object CameraOcrEngine {
 
             val result = mutableListOf<RawOcrLine>()
 
-            // AUTO works best for ordinary paragraphs. SPARSE_TEXT is much
-            // better for product labels, signs and large isolated headings.
+            // Keep a colour pass because global thresholding can erase pale or
+            // decorative lettering. Grayscale AUTO handles normal paragraphs,
+            // while the binary sparse pass catches small high-contrast fragments.
             val passes = listOf(
-                preparedImages[0] to TessBaseAPI.PageSegMode.PSM_AUTO,
-                preparedImages[1] to TessBaseAPI.PageSegMode.PSM_SPARSE_TEXT,
+                preparedImages[0] to TessBaseAPI.PageSegMode.PSM_SPARSE_TEXT,
+                preparedImages[1] to TessBaseAPI.PageSegMode.PSM_AUTO,
+                preparedImages[2] to TessBaseAPI.PageSegMode.PSM_SPARSE_TEXT,
             )
 
             passes.forEach { (image, pageSegMode) ->
@@ -253,11 +252,8 @@ internal object CameraOcrEngine {
         val enhanced = makeHighContrastGrayscale(scaled, binary = false)
         val binary = makeHighContrastGrayscale(scaled, binary = true)
 
-        if (scaled !== original && scaled !== enhanced && scaled !== binary) {
-            scaled.recycle()
-        }
-
         return listOf(
+            PreparedImage(scaled, actualScale),
             PreparedImage(enhanced, actualScale),
             PreparedImage(binary, actualScale),
         )
@@ -718,7 +714,9 @@ internal object CameraOcrEngine {
     }
 
     private fun prepareTessData(context: Context, languageCodes: Set<String>): File {
-        val dataPath = File(context.filesDir, "camera_ocr").apply { mkdirs() }
+        // New directory forces existing installations to replace the previous
+        // tessdata_fast files with the more accurate tessdata_best models.
+        val dataPath = File(context.filesDir, "camera_ocr_best_v1").apply { mkdirs() }
         val tessDataDir = File(dataPath, "tessdata").apply { mkdirs() }
         languageCodes.forEach { code ->
             val fileName = "$code.traineddata"
@@ -732,11 +730,17 @@ internal object CameraOcrEngine {
         return dataPath
     }
 
-    private fun Language?.toTessLanguage(): String = when (this) {
-        Language.RUSSIAN -> "rus"
-        Language.ENGLISH -> "eng"
-        Language.CHINESE -> "chi_sim"
+    private fun Language?.toTessLanguageSpec(): String = when (this) {
+        Language.RUSSIAN -> "rus+eng"
+        Language.ENGLISH -> "eng+rus"
+        Language.CHINESE -> "chi_sim+eng"
         null -> "rus+eng+chi_sim"
+    }
+
+    private fun Language.fallbackTessLanguages(): List<String> = when (this) {
+        Language.RUSSIAN -> listOf("rus", "eng")
+        Language.ENGLISH -> listOf("eng", "rus")
+        Language.CHINESE -> listOf("chi_sim", "eng")
     }
 
     private fun Rect.toOriginalRect(scale: Float, width: Int, height: Int): Rect {
@@ -756,8 +760,8 @@ internal object CameraOcrEngine {
         .lowercase()
         .filter(Char::isLetterOrDigit)
 
-    private const val RAW_MIN_CONFIDENCE = 14f
-    private const val FINAL_MIN_CONFIDENCE = 24f
+    private const val RAW_MIN_CONFIDENCE = 10f
+    private const val FINAL_MIN_CONFIDENCE = 20f
     private const val MIN_ALPHANUMERIC_CHARS = 2
     private const val MIN_BOX_PIXELS = 6
     private const val LONG_TEXT_OVERRIDE = 14
