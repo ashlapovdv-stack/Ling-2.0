@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'scripts/patch_camera_ocr_speed.py'
+      - '.github/workflows/patch-camera-ocr-speed.yml'
 
 permissions:
   contents: write
