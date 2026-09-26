@@ -47,10 +47,24 @@ private data class PreparedImage(
     val scaleFromOriginal: Float,
 )
 
+private enum class OcrSource {
+    TESSERACT,
+    MLKIT_LATIN,
+    MLKIT_CHINESE,
+}
+
+private enum class OcrScript {
+    CYRILLIC,
+    LATIN,
+    HAN,
+    OTHER,
+}
+
 private data class RawOcrLine(
     val text: String,
     val rect: Rect,
     val confidence: Float,
+    val source: OcrSource,
 )
 
 internal object CameraOcrEngine {
@@ -60,10 +74,10 @@ internal object CameraOcrEngine {
         sourceLanguage: Language?,
     ): CameraOcrResult = withContext(Dispatchers.Default) {
         val original = loadCameraBitmap(context, uriString)
-        // OCR is deliberately multilingual even when the user selects a source
-        // language. Product labels frequently mix Russian/Chinese with English
-        // brand names, numbers and short Latin phrases. The selected language is
-        // still placed first so Tesseract gives it priority.
+        // Keep the common path deliberately small. ML Kit handles Latin (and
+        // Chinese in AUTO/Chinese), while Tesseract concentrates on Cyrillic and
+        // mixed Russian/English text. Expensive precision passes are only used
+        // when the first result is genuinely weak.
         val primaryLanguage = sourceLanguage.toTessLanguageSpec()
         val dataPath = prepareTessData(context, setOf("rus", "eng", "chi_sim"))
         val preparedImages = prepareImages(original)
@@ -71,9 +85,6 @@ internal object CameraOcrEngine {
         try {
             val rawLines = mutableListOf<RawOcrLine>()
 
-            // Hybrid OCR: Tesseract remains the primary recognizer for Russian
-            // and mixed Cyrillic labels. Bundled ML Kit contributes stronger
-            // Latin/Chinese detections, especially large decorative headings.
             rawLines += recognizeWithMlKit(
                 bitmap = original,
                 sourceLanguage = sourceLanguage,
@@ -84,29 +95,24 @@ internal object CameraOcrEngine {
                 preparedImages = preparedImages,
                 originalWidth = original.width,
                 originalHeight = original.height,
+                fullPassSet = false,
             )
 
-            // If the combined pass is weak, retry individual scripts. AUTO can
-            // also use the dominant detected script as a precision pass.
-            val fallbackLanguages = when {
-                sourceLanguage == null && isWeakResult(rawLines) ->
-                    listOf("rus", "eng", "chi_sim")
-                sourceLanguage == null ->
-                    detectDominantLanguage(rawLines)?.let(::listOf).orEmpty()
-                else -> sourceLanguage.fallbackTessLanguages()
-            }
-
-            // A mixed model is good at ordinary labels, but a dedicated language
-            // pass often recovers stylised headings or brand names. Run those
-            // precision passes even when the mixed result already looks strong.
-            fallbackLanguages.forEach { language ->
+            val firstPass = deduplicateLines(rawLines)
+            if (isWeakResult(firstPass)) {
+                val precisionLanguage = when (sourceLanguage) {
+                    Language.RUSSIAN -> "rus"
+                    Language.ENGLISH -> "eng"
+                    Language.CHINESE -> "chi_sim"
+                    null -> detectDominantLanguage(firstPass) ?: "rus"
+                }
                 rawLines += recognizeWithLanguage(
                     dataPath = dataPath,
-                    languageSpec = language,
+                    languageSpec = precisionLanguage,
                     preparedImages = preparedImages,
                     originalWidth = original.width,
                     originalHeight = original.height,
-                    fullPassSet = false,
+                    fullPassSet = true,
                 )
             }
 
@@ -140,24 +146,26 @@ internal object CameraOcrEngine {
         sourceLanguage: Language?,
     ): List<RawOcrLine> {
         val inputImage = InputImage.fromBitmap(bitmap, 0)
-        val recognizers = mutableListOf<TextRecognizer>()
+        val recognizers = mutableListOf<Pair<TextRecognizer, OcrSource>>()
 
-        // Latin is useful even when Russian is selected because product labels
-        // often contain English brand names and headings.
-        recognizers += TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+        recognizers += TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) to
+            OcrSource.MLKIT_LATIN
         if (sourceLanguage == null || sourceLanguage == Language.CHINESE) {
             recognizers += TextRecognition.getClient(
                 ChineseTextRecognizerOptions.Builder().build(),
-            )
+            ) to OcrSource.MLKIT_CHINESE
+        }
+
+        // Start recognizers before awaiting them. AUTO can therefore run Latin
+        // and Chinese ML Kit work in parallel instead of serially.
+        val tasks = recognizers.map { (recognizer, source) ->
+            Triple(recognizer, source, recognizer.process(inputImage))
         }
 
         return try {
             buildList {
-                recognizers.forEach { recognizer ->
-                    val result = runCatching {
-                        Tasks.await(recognizer.process(inputImage))
-                    }.getOrNull() ?: return@forEach
-
+                tasks.forEach { (_, source, task) ->
+                    val result = runCatching { Tasks.await(task) }.getOrNull() ?: return@forEach
                     result.textBlocks.forEach { block ->
                         block.lines.forEach { line ->
                             val rect = line.boundingBox
@@ -173,6 +181,7 @@ internal object CameraOcrEngine {
                                         text = value,
                                         rect = Rect(rect),
                                         confidence = MLKIT_DEFAULT_CONFIDENCE,
+                                        source = source,
                                     ),
                                 )
                             }
@@ -181,7 +190,7 @@ internal object CameraOcrEngine {
                 }
             }
         } finally {
-            recognizers.forEach(TextRecognizer::close)
+            recognizers.forEach { (recognizer, _) -> recognizer.close() }
         }
     }
 
@@ -314,6 +323,7 @@ internal object CameraOcrEngine {
                             text = text,
                             rect = rect,
                             confidence = confidence,
+                            source = OcrSource.TESSERACT,
                         )
                     }
                 }
@@ -436,19 +446,70 @@ internal object CameraOcrEngine {
     private fun deduplicateLines(lines: List<RawOcrLine>): List<RawOcrLine> {
         val accepted = mutableListOf<RawOcrLine>()
         lines
-            .sortedByDescending { it.confidence }
+            .sortedByDescending(::sourceAwareScore)
             .forEach { candidate ->
-                val duplicateIndex = accepted.indexOfFirst { existing ->
-                    rectIou(existing.rect, candidate.rect) >= DUPLICATE_IOU ||
+                val duplicate = accepted.any { existing ->
+                    val iou = rectIou(existing.rect, candidate.rect)
+                    val containment = rectContainmentOverlap(existing.rect, candidate.rect)
+                    val normalizedExisting = normalizedText(existing.text)
+                    val normalizedCandidate = normalizedText(candidate.text)
+                    val sameText = normalizedExisting.isNotEmpty() &&
+                        normalizedExisting == normalizedCandidate
+                    val sameScript = dominantScript(existing.text) == dominantScript(candidate.text)
+                    val nestedAlternative = containment >= RAW_CONTAINMENT_DUPLICATE &&
+                        sameScript &&
+                        dominantScript(candidate.text) != OcrScript.OTHER
+
+                    iou >= DUPLICATE_IOU ||
+                        nestedAlternative ||
                         (
-                            normalizedText(existing.text) == normalizedText(candidate.text) &&
+                            sameText &&
                                 centerDistance(existing.rect, candidate.rect) <=
                                 max(existing.rect.height(), candidate.rect.height()) * 1.5f
                             )
                 }
-                if (duplicateIndex < 0) accepted += candidate
+                if (!duplicate) accepted += candidate
             }
         return accepted.sortedWith(compareBy<RawOcrLine> { it.rect.top }.thenBy { it.rect.left })
+    }
+
+    private fun sourceAwareScore(line: RawOcrLine): Double {
+        val bonus = when (dominantScript(line.text)) {
+            OcrScript.CYRILLIC -> if (line.source == OcrSource.TESSERACT) 22.0 else 0.0
+            OcrScript.LATIN -> when (line.source) {
+                OcrSource.MLKIT_LATIN -> 24.0
+                OcrSource.TESSERACT -> 3.0
+                else -> 0.0
+            }
+            OcrScript.HAN -> when (line.source) {
+                OcrSource.MLKIT_CHINESE -> 24.0
+                OcrSource.TESSERACT -> 6.0
+                else -> 0.0
+            }
+            OcrScript.OTHER -> 0.0
+        }
+        val lengthBonus = min(16, line.text.count(Char::isLetterOrDigit)) * 0.35
+        return line.confidence + bonus + lengthBonus
+    }
+
+    private fun dominantScript(text: String): OcrScript {
+        var cyrillic = 0
+        var latin = 0
+        var han = 0
+        text.forEach { char ->
+            when {
+                char in '\u0400'..'\u04FF' -> cyrillic++
+                char in '\u4E00'..'\u9FFF' -> han++
+                char.isLetter() && char.code < 0x0250 -> latin++
+            }
+        }
+        val maxCount = max(cyrillic, max(latin, han))
+        if (maxCount == 0) return OcrScript.OTHER
+        return when (maxCount) {
+            cyrillic -> OcrScript.CYRILLIC
+            han -> OcrScript.HAN
+            else -> OcrScript.LATIN
+        }
     }
 
     private fun groupLinesIntoBlocks(
@@ -830,7 +891,7 @@ internal object CameraOcrEngine {
         Language.RUSSIAN -> "rus+eng"
         Language.ENGLISH -> "eng+rus"
         Language.CHINESE -> "chi_sim+eng"
-        null -> "rus+eng+chi_sim"
+        null -> "rus+eng"
     }
 
     private fun Language.fallbackTessLanguages(): List<String> = when (this) {
@@ -856,7 +917,7 @@ internal object CameraOcrEngine {
         .lowercase()
         .filter(Char::isLetterOrDigit)
 
-    private const val MLKIT_DEFAULT_CONFIDENCE = 68f
+    private const val MLKIT_DEFAULT_CONFIDENCE = 82f
     private const val RAW_MIN_CONFIDENCE = 10f
     private const val WORD_MIN_CONFIDENCE = 24f
     private const val WORD_INSIDE_LINE_OVERLAP = 0.84f
@@ -864,24 +925,25 @@ internal object CameraOcrEngine {
     private const val MIN_ALPHANUMERIC_CHARS = 2
     private const val MIN_BOX_PIXELS = 6
     private const val LONG_TEXT_OVERRIDE = 14
-    private const val DUPLICATE_IOU = 0.46f
+    private const val DUPLICATE_IOU = 0.42f
+    private const val RAW_CONTAINMENT_DUPLICATE = 0.82f
     private const val MIN_HORIZONTAL_OVERLAP = 0.18f
     private const val MAX_VERTICAL_GAP_FACTOR = 0.72f
     private const val LEFT_ALIGNMENT_FACTOR = 0.85f
     private const val CENTER_ALIGNMENT_FACTOR = 0.22f
-    private const val MAX_LINE_HEIGHT_RATIO = 1.75f
+    private const val MAX_LINE_HEIGHT_RATIO = 1.55f
     private const val MAX_LINE_OVERLAP_FACTOR = 0.35f
     private const val MAX_BLOCK_HEIGHT_FRACTION = 0.16f
     private const val MAX_LINES_PER_BLOCK = 5
-    private const val TINY_BLOCK_WIDTH_FRACTION = 0.035f
-    private const val TINY_BLOCK_HEIGHT_FRACTION = 0.012f
-    private const val TINY_BLOCK_MIN_CHARS = 4
+    private const val TINY_BLOCK_WIDTH_FRACTION = 0.05f
+    private const val TINY_BLOCK_HEIGHT_FRACTION = 0.016f
+    private const val TINY_BLOCK_MIN_CHARS = 5
     private const val MIN_BLOCK_WIDTH_FRACTION = 0.012f
     private const val MIN_BLOCK_HEIGHT_FRACTION = 0.004f
 
-    private const val BARCODE_MIN_DIGITS = 8
-    private const val BARCODE_MAX_LETTERS = 1
-    private const val BARCODE_DIGIT_RATIO = 0.78f
+    private const val BARCODE_MIN_DIGITS = 6
+    private const val BARCODE_MAX_LETTERS = 3
+    private const val BARCODE_DIGIT_RATIO = 0.62f
     private const val HUGE_BLOCK_AREA_FRACTION = 0.10
     private const val HUGE_BLOCK_MIN_CHARS = 18
     private const val WIDE_NOISE_WIDTH_FRACTION = 0.82f
@@ -892,7 +954,7 @@ internal object CameraOcrEngine {
     private const val BLOCK_CHARACTER_SCORE = 0.75
     private const val BLOCK_AREA_PENALTY = 70.0
     private const val MAX_PARAGRAPH_LINES = 6
-    private const val PARAGRAPH_MAX_HEIGHT_RATIO = 1.45f
+    private const val PARAGRAPH_MAX_HEIGHT_RATIO = 1.32f
     private const val PARAGRAPH_MAX_GAP_FACTOR = 0.70f
     private const val PARAGRAPH_MAX_HEIGHT_FRACTION = 0.20f
     private const val PARAGRAPH_LEFT_ALIGNMENT_FACTOR = 1.4f
