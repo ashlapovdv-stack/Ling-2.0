@@ -615,9 +615,10 @@ internal object CameraOcrEngine {
             orderedWords.drop(1).forEach { rect.union(it.rect) }
             val charWeight = orderedWords.sumOf { it.text.count(Char::isLetterOrDigit) }
                 .coerceAtLeast(1)
-            val confidence = orderedWords.sumOf {
-                it.confidence * it.text.count(Char::isLetterOrDigit).coerceAtLeast(1)
-            } / charWeight
+            val confidenceSum = orderedWords.fold(0f) { sum, item ->
+                sum + item.confidence * item.text.count(Char::isLetterOrDigit).coerceAtLeast(1)
+            }
+            val confidence = confidenceSum / charWeight.toFloat()
             val bestSource = orderedWords.maxByOrNull(::sourceAwareScore)?.source
                 ?: OcrSource.TESSERACT
 
@@ -763,9 +764,9 @@ internal object CameraOcrEngine {
         val clean = token.trim()
         if (clean.isEmpty()) return
         val previous = builder.lastOrNull()
-        val first = clean.firstOrNull()
+        val first = clean.first()
         val needsSpace = builder.isNotEmpty() &&
-            !(previous?.isHanCharacter() == true && first?.isHanCharacter() == true) &&
+            !(previous?.isHanCharacter() == true && first.isHanCharacter()) &&
             first !in charArrayOf(',', '.', ':', ';', '!', '?', '%', ')', ']', '}', '，', '。', '：', '；', '！', '？')
         if (needsSpace) builder.append(' ')
         builder.append(clean)
