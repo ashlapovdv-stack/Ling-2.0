@@ -12,6 +12,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         val historyRepository = TranslationHistoryRepository(applicationContext)
+        val modelRepository = ModelRepository(applicationContext)
+        val engine = LlamaTranslationEngine()
 
         setContent {
             MaterialTheme(
@@ -26,8 +28,18 @@ class MainActivity : ComponentActivity() {
                     onSurfaceVariant = Color(0xFF667085),
                 )
             ) {
-                LingApp(historyRepository = historyRepository)
+                LingApp(
+                    historyRepository = historyRepository,
+                    modelRepository = modelRepository,
+                    engine = engine,
+                )
             }
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        // Native resources are process-scoped. They are released when the process exits;
+        // explicit unload is handled from model settings when the user removes a model.
     }
 }
