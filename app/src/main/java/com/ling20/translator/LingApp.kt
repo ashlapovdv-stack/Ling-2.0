@@ -11,7 +11,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -38,6 +37,7 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Translate
+import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -101,6 +101,10 @@ private enum class SourceLanguageOption(
 private val ScreenBackground = Color(0xFFF5F8FC)
 private val CardBorder = Color(0xFFE3E8EF)
 private val ResultBackground = Color(0xFFEAF2FF)
+private val ModelReadyGreen = Color(0xFF12B76A)
+private val ModelUnavailableGray = Color(0xFFD0D5DD)
+private const val TTS_SOURCE = "source"
+private const val TTS_RESULT = "result"
 
 @Composable
 fun LingApp(
@@ -161,6 +165,7 @@ fun LingApp(
                     output = output,
                     translating = translating,
                     modelLoading = modelLoading,
+                    modelReady = engineReady,
                     onSourceSelected = { chosen ->
                         sourceOptionName = chosen.name
                         val explicit = chosen.language
@@ -300,6 +305,7 @@ private fun TranslatorScreen(
     output: String,
     translating: Boolean,
     modelLoading: Boolean,
+    modelReady: Boolean,
     onSourceSelected: (SourceLanguageOption) -> Unit,
     onTargetSelected: (Language) -> Unit,
     onSwap: () -> Unit,
@@ -313,6 +319,8 @@ private fun TranslatorScreen(
     val sourceSpeechLanguage = source.language ?: runCatching {
         detectSupportedLanguage(input)
     }.getOrNull()
+    val sourceSpeaking = tts.activeRequestId == TTS_SOURCE
+    val resultSpeaking = tts.activeRequestId == TTS_RESULT
 
     Column(
         modifier = Modifier
@@ -334,11 +342,13 @@ private fun TranslatorScreen(
         InputCard(
             input = input,
             enabled = !translating,
+            modelReady = modelReady,
             speechLanguage = source.language,
+            speaking = sourceSpeaking,
             onInputChanged = onInputChanged,
             onSpeak = {
                 if (sourceSpeechLanguage != null) {
-                    tts.speak(input, sourceSpeechLanguage)
+                    tts.toggleSpeak(TTS_SOURCE, input, sourceSpeechLanguage)
                 } else {
                     Toast.makeText(
                         context,
@@ -354,7 +364,10 @@ private fun TranslatorScreen(
                     Toast.makeText(context, "Исходный текст скопирован", Toast.LENGTH_SHORT).show()
                 }
             },
-            onClear = onClearInput,
+            onClear = {
+                if (sourceSpeaking) tts.stop()
+                onClearInput()
+            },
         )
 
         Button(
@@ -390,13 +403,17 @@ private fun TranslatorScreen(
             TranslationResultCard(
                 target = target,
                 output = output,
-                onSpeak = { tts.speak(output, target) },
+                speaking = resultSpeaking,
+                onSpeak = { tts.toggleSpeak(TTS_RESULT, output, target) },
                 onCopy = {
                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                     clipboard.setPrimaryClip(ClipData.newPlainText("Ling translation", output))
                     Toast.makeText(context, "Перевод скопирован", Toast.LENGTH_SHORT).show()
                 },
-                onClear = onClearResult,
+                onClear = {
+                    if (resultSpeaking) tts.stop()
+                    onClearResult()
+                },
             )
         } else {
             EmptyResultHint(target)
@@ -582,7 +599,9 @@ private fun LanguagePicker(
 private fun InputCard(
     input: String,
     enabled: Boolean,
+    modelReady: Boolean,
     speechLanguage: Language?,
+    speaking: Boolean,
     onInputChanged: (String) -> Unit,
     onSpeak: () -> Unit,
     onCopy: () -> Unit,
@@ -614,6 +633,8 @@ private fun InputCard(
                     style = MaterialTheme.typography.labelSmall,
                     color = Color(0xFF98A2B3),
                 )
+                Spacer(Modifier.size(8.dp))
+                ModelAiBadge(modelReady)
             }
 
             BasicTextField(
@@ -657,8 +678,13 @@ private fun InputCard(
                     onClick = onSpeak,
                 ) {
                     Icon(
-                        Icons.Default.VolumeUp,
-                        contentDescription = "Озвучить исходный текст",
+                        imageVector = if (speaking) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                        contentDescription = if (speaking) {
+                            "Остановить озвучивание исходного текста"
+                        } else {
+                            "Озвучить исходный текст"
+                        },
+                        tint = if (speaking) MaterialTheme.colorScheme.primary else Color(0xFF667085),
                     )
                 }
                 Spacer(Modifier.weight(1f))
@@ -686,9 +712,26 @@ private fun InputCard(
 }
 
 @Composable
+private fun ModelAiBadge(modelReady: Boolean) {
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = if (modelReady) ModelReadyGreen else ModelUnavailableGray,
+    ) {
+        Text(
+            text = "AI",
+            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            color = if (modelReady) Color.White else Color(0xFF667085),
+        )
+    }
+}
+
+@Composable
 private fun TranslationResultCard(
     target: Language,
     output: String,
+    speaking: Boolean,
     onSpeak: () -> Unit,
     onCopy: () -> Unit,
     onClear: () -> Unit,
@@ -741,9 +784,14 @@ private fun TranslationResultCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 ResultIconButton(
-                    icon = Icons.Default.VolumeUp,
-                    contentDescription = "Озвучить перевод",
+                    icon = if (speaking) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                    contentDescription = if (speaking) {
+                        "Остановить озвучивание перевода"
+                    } else {
+                        "Озвучить перевод"
+                    },
                     onClick = onSpeak,
+                    active = speaking,
                 )
                 ResultIconButton(
                     icon = Icons.Default.ContentCopy,
@@ -765,12 +813,13 @@ private fun ResultIconButton(
     icon: ImageVector,
     contentDescription: String,
     onClick: () -> Unit,
+    active: Boolean = false,
 ) {
     IconButton(onClick = onClick) {
         Icon(
             imageVector = icon,
             contentDescription = contentDescription,
-            tint = MaterialTheme.colorScheme.primary,
+            tint = if (active) MaterialTheme.colorScheme.primary else Color(0xFF667085),
         )
     }
 }
