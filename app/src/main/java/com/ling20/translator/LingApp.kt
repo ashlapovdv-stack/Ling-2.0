@@ -35,7 +35,6 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SwapHoriz
@@ -100,8 +99,7 @@ fun LingApp(
     var modelLoading by remember { mutableStateOf(true) }
     var modelError by remember { mutableStateOf<String?>(null) }
 
-    // Translation state intentionally lives at the app level so switching tabs
-    // does not recreate/clear the translator form.
+    // Translation state is kept above the tabs so switching modes never clears it.
     var sourceName by rememberSaveable { mutableStateOf(Language.RUSSIAN.name) }
     var targetName by rememberSaveable { mutableStateOf(Language.ENGLISH.name) }
     var input by rememberSaveable { mutableStateOf("") }
@@ -170,6 +168,9 @@ fun LingApp(
                     onInputChanged = { value ->
                         if (value.length <= 5000 && !translating) input = value
                     },
+                    onClearInput = {
+                        if (!translating) input = ""
+                    },
                     onTranslate = {
                         val clean = input.trim()
                         if (!engineReady) {
@@ -207,15 +208,15 @@ fun LingApp(
                 )
 
                 AppSection.CAMERA -> ComingSoon(
-                    "Камера",
-                    "Перевод текста со снимка и изображения из галереи будет добавлен следующим этапом.",
-                    true,
+                    title = "Камера",
+                    description = "Перевод текста со снимка и изображения из галереи будет добавлен следующим этапом.",
+                    camera = true,
                 )
 
                 AppSection.DIALOG -> ComingSoon(
-                    "Диалог",
-                    "Двусторонний голосовой перевод будет добавлен после базового текстового режима.",
-                    false,
+                    title = "Диалог",
+                    description = "Двусторонний голосовой перевод будет добавлен после базового текстового режима.",
+                    camera = false,
                 )
 
                 AppSection.SETTINGS -> when (settingsPage) {
@@ -266,6 +267,7 @@ private fun TranslatorScreen(
     onTargetSelected: (Language) -> Unit,
     onSwap: () -> Unit,
     onInputChanged: (String) -> Unit,
+    onClearInput: () -> Unit,
     onTranslate: () -> Unit,
     onClearResult: () -> Unit,
 ) {
@@ -278,8 +280,6 @@ private fun TranslatorScreen(
             .padding(horizontal = 18.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        // No title/model status header here: translator starts immediately
-        // with language controls to maximize space for input and result.
         LanguageRow(
             source = source,
             target = target,
@@ -293,6 +293,7 @@ private fun TranslatorScreen(
             input = input,
             enabled = !translating,
             onInputChanged = onInputChanged,
+            onClear = onClearInput,
         )
 
         Button(
@@ -451,6 +452,7 @@ private fun InputCard(
     input: String,
     enabled: Boolean,
     onInputChanged: (String) -> Unit,
+    onClear: () -> Unit,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -523,12 +525,15 @@ private fun InputCard(
                     )
                 }
                 Spacer(Modifier.weight(1f))
-                Icon(
-                    Icons.Default.Keyboard,
-                    contentDescription = null,
-                    modifier = Modifier.size(21.dp),
-                    tint = Color(0xFF98A2B3),
-                )
+                IconButton(
+                    enabled = enabled && input.isNotEmpty(),
+                    onClick = onClear,
+                ) {
+                    Icon(
+                        Icons.Default.Delete,
+                        contentDescription = "Очистить исходный текст",
+                    )
+                }
             }
         }
     }
