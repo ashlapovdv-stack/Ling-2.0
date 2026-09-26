@@ -77,7 +77,7 @@ import java.util.Date
 import java.util.Locale
 
 private enum class AppSection { TRANSLATE, CAMERA, DIALOG, SETTINGS }
-private enum class SettingsPage { ROOT, TRANSLATION, MODEL, HISTORY }
+private enum class SettingsPage { ROOT, TRANSLATION, CAMERA, MODEL, HISTORY }
 
 private enum class SourceLanguageOption(
     val language: Language?,
@@ -108,6 +108,9 @@ private const val TTS_RESULT = "result"
 private const val TRANSLATION_PREFS = "ling_translation_settings"
 private const val PREF_DEFAULT_SOURCE = "default_source_language"
 private const val PREF_DEFAULT_TARGET = "default_target_language"
+private const val CAMERA_PREFS = "ling_camera_settings"
+private const val PREF_CAMERA_DEFAULT_SOURCE = "camera_default_source_language"
+private const val PREF_CAMERA_DEFAULT_TARGET = "camera_default_target_language"
 
 @Composable
 fun LingApp(
@@ -119,6 +122,9 @@ fun LingApp(
     val appScope = rememberCoroutineScope()
     val translationPreferences = remember(context) {
         context.applicationContext.getSharedPreferences(TRANSLATION_PREFS, Context.MODE_PRIVATE)
+    }
+    val cameraPreferences = remember(context) {
+        context.applicationContext.getSharedPreferences(CAMERA_PREFS, Context.MODE_PRIVATE)
     }
     val initialDefaultSource = remember(translationPreferences) {
         val saved = translationPreferences.getString(
@@ -136,6 +142,22 @@ fun LingApp(
         runCatching { Language.valueOf(saved ?: Language.ENGLISH.name) }
             .getOrDefault(Language.ENGLISH)
     }
+    val initialCameraDefaultSource = remember(cameraPreferences, initialDefaultSource) {
+        val saved = cameraPreferences.getString(
+            PREF_CAMERA_DEFAULT_SOURCE,
+            initialDefaultSource.name,
+        )
+        runCatching { SourceLanguageOption.valueOf(saved ?: initialDefaultSource.name) }
+            .getOrDefault(initialDefaultSource)
+    }
+    val initialCameraDefaultTarget = remember(cameraPreferences, initialDefaultTarget) {
+        val saved = cameraPreferences.getString(
+            PREF_CAMERA_DEFAULT_TARGET,
+            initialDefaultTarget.name,
+        )
+        runCatching { Language.valueOf(saved ?: initialDefaultTarget.name) }
+            .getOrDefault(initialDefaultTarget)
+    }
 
     var section by rememberSaveable { mutableStateOf(AppSection.TRANSLATE) }
     var settingsPage by rememberSaveable { mutableStateOf(SettingsPage.ROOT) }
@@ -146,6 +168,8 @@ fun LingApp(
     var modelError by remember { mutableStateOf<String?>(null) }
     var defaultSourceName by remember { mutableStateOf(initialDefaultSource.name) }
     var defaultTargetName by remember { mutableStateOf(initialDefaultTarget.name) }
+    var cameraDefaultSourceName by remember { mutableStateOf(initialCameraDefaultSource.name) }
+    var cameraDefaultTargetName by remember { mutableStateOf(initialCameraDefaultTarget.name) }
 
     var sourceOptionName by rememberSaveable {
         mutableStateOf(
@@ -167,6 +191,10 @@ fun LingApp(
         .getOrDefault(SourceLanguageOption.RUSSIAN)
     val defaultTarget = runCatching { Language.valueOf(defaultTargetName) }
         .getOrDefault(Language.ENGLISH)
+    val cameraDefaultSource = runCatching { SourceLanguageOption.valueOf(cameraDefaultSourceName) }
+        .getOrDefault(initialCameraDefaultSource)
+    val cameraDefaultTarget = runCatching { Language.valueOf(cameraDefaultTargetName) }
+        .getOrDefault(initialCameraDefaultTarget)
 
     fun syncEngine() {
         engineReady = engine.isReady
@@ -287,9 +315,9 @@ fun LingApp(
                 )
 
                 AppSection.CAMERA -> CameraModeScreen(
-          defaultSource = defaultSource.language,
-          defaultTarget = defaultTarget,
-      )
+                    defaultSource = cameraDefaultSource.language,
+                    defaultTarget = cameraDefaultTarget,
+                )
 
                 AppSection.DIALOG -> ComingSoon(
                     title = "Диалог",
@@ -305,7 +333,10 @@ fun LingApp(
                         modelError = modelError,
                         historyCount = history.size,
                         defaultSource = defaultSource,
+                        cameraDefaultSource = cameraDefaultSource,
+                        cameraDefaultTarget = cameraDefaultTarget,
                         onTranslation = { settingsPage = SettingsPage.TRANSLATION },
+                        onCamera = { settingsPage = SettingsPage.CAMERA },
                         onModel = { settingsPage = SettingsPage.MODEL },
                         onHistory = { settingsPage = SettingsPage.HISTORY },
                     )
@@ -337,6 +368,36 @@ fun LingApp(
                                 if (sourceOption.language == selected) {
                                     sourceOptionName = SourceLanguageOption.AUTO.name
                                 }
+                            }
+                        },
+                    )
+
+                    SettingsPage.CAMERA -> CameraSettings(
+                        defaultSource = cameraDefaultSource,
+                        defaultTarget = cameraDefaultTarget,
+                        onBack = { settingsPage = SettingsPage.ROOT },
+                        onDefaultSourceChanged = { selected ->
+                            cameraDefaultSourceName = selected.name
+                            cameraPreferences.edit()
+                                .putString(PREF_CAMERA_DEFAULT_SOURCE, selected.name)
+                                .apply()
+                            if (selected.language == cameraDefaultTarget) {
+                                cameraDefaultTargetName = Language.entries.first { it != selected.language }.name
+                                cameraPreferences.edit()
+                                    .putString(PREF_CAMERA_DEFAULT_TARGET, cameraDefaultTargetName)
+                                    .apply()
+                            }
+                        },
+                        onDefaultTargetChanged = { selected ->
+                            cameraDefaultTargetName = selected.name
+                            cameraPreferences.edit()
+                                .putString(PREF_CAMERA_DEFAULT_TARGET, selected.name)
+                                .apply()
+                            if (cameraDefaultSource.language == selected) {
+                                cameraDefaultSourceName = SourceLanguageOption.AUTO.name
+                                cameraPreferences.edit()
+                                    .putString(PREF_CAMERA_DEFAULT_SOURCE, SourceLanguageOption.AUTO.name)
+                                    .apply()
                             }
                         },
                     )
@@ -980,7 +1041,10 @@ private fun SettingsRoot(
     modelError: String?,
     historyCount: Int,
     defaultSource: SourceLanguageOption,
+    cameraDefaultSource: SourceLanguageOption,
+    cameraDefaultTarget: Language,
     onTranslation: () -> Unit,
+    onCamera: () -> Unit,
     onModel: () -> Unit,
     onHistory: () -> Unit,
 ) {
@@ -998,6 +1062,13 @@ private fun SettingsRoot(
             title = "Перевод",
             subtitle = "Язык ввода по умолчанию: ${defaultSource.settingsLabel()}",
             onClick = onTranslation,
+        )
+
+        SettingsRow(
+            icon = { Icon(Icons.Default.CameraAlt, contentDescription = null) },
+            title = "Камера",
+            subtitle = "Ввод: ${cameraDefaultSource.settingsLabel()} · Вывод: ${cameraDefaultTarget.displayName}",
+            onClick = onCamera,
         )
 
         SettingsRow(
@@ -1105,6 +1176,90 @@ private fun TranslationSettings(
                 )
                 Text(
                     "Доступны: Русский, English и 中文. Выбранный язык используется как язык результата при следующем запуске приложения.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CameraSettings(
+    defaultSource: SourceLanguageOption,
+    defaultTarget: Language,
+    onBack: () -> Unit,
+    onDefaultSourceChanged: (SourceLanguageOption) -> Unit,
+    onDefaultTargetChanged: (Language) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.Default.ArrowBack, contentDescription = "Назад")
+            }
+            Text(
+                "Камера",
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    "Язык ввода по умолчанию",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                SourceLanguagePicker(
+                    source = defaultSource,
+                    enabled = true,
+                    onSelected = onDefaultSourceChanged,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "Доступны: Автоопределение, Русский, English и 中文. Этот язык используется при открытии камеры.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    "Язык вывода по умолчанию",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                LanguagePicker(
+                    language = defaultTarget,
+                    enabled = true,
+                    onSelected = onDefaultTargetChanged,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "Доступны: Русский, English и 中文. Этот язык используется как язык результата в режиме камеры.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

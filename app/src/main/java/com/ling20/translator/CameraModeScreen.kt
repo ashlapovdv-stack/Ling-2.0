@@ -97,13 +97,13 @@ internal fun CameraModeScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    var sourceName by rememberSaveable {
+    var sourceName by rememberSaveable(defaultSource, defaultTarget) {
         mutableStateOf(
             if (defaultSource == defaultTarget) CameraSourceLanguage.AUTO.name
             else CameraSourceLanguage.from(defaultSource).name,
         )
     }
-    var targetName by rememberSaveable { mutableStateOf(defaultTarget.name) }
+    var targetName by rememberSaveable(defaultTarget) { mutableStateOf(defaultTarget.name) }
     var selectedImageUri by rememberSaveable { mutableStateOf<String?>(null) }
     var cameraError by rememberSaveable { mutableStateOf<String?>(null) }
     var lensFacing by rememberSaveable { mutableStateOf(CameraSelector.LENS_FACING_BACK) }
