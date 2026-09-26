@@ -118,7 +118,6 @@ fun LingApp(
     var modelLoading by remember { mutableStateOf(true) }
     var modelError by remember { mutableStateOf<String?>(null) }
 
-    // Translator state is kept above the tabs, so mode switches never clear it.
     var sourceOptionName by rememberSaveable { mutableStateOf(SourceLanguageOption.RUSSIAN.name) }
     var targetName by rememberSaveable { mutableStateOf(Language.ENGLISH.name) }
     var input by rememberSaveable { mutableStateOf("") }
@@ -331,6 +330,7 @@ private fun TranslatorScreen(
         InputCard(
             input = input,
             enabled = !translating,
+            speechLanguage = source.language,
             onInputChanged = onInputChanged,
             onCopy = {
                 if (input.isNotBlank()) {
@@ -566,6 +566,7 @@ private fun LanguagePicker(
 private fun InputCard(
     input: String,
     enabled: Boolean,
+    speechLanguage: Language?,
     onInputChanged: (String) -> Unit,
     onCopy: () -> Unit,
     onClear: () -> Unit,
@@ -628,12 +629,12 @@ private fun InputCard(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                IconButton(enabled = false, onClick = {}) {
-                    Icon(
-                        Icons.Default.Mic,
-                        contentDescription = "Голосовой ввод — следующий этап",
-                    )
-                }
+                OfflineSpeechButton(
+                    language = speechLanguage,
+                    enabled = enabled,
+                    currentText = input,
+                    onTextChanged = onInputChanged,
+                )
                 IconButton(enabled = false, onClick = {}) {
                     Icon(
                         Icons.Default.Image,
@@ -799,8 +800,7 @@ private fun detectSupportedLanguage(text: String): Language {
     text.forEach { character ->
         when {
             character in '\u0400'..'\u04FF' -> cyrillic++
-            character in '\u4E00'..'\u9FFF' ||
-                character in '\u3400'..'\u4DBF' -> han++
+            character in '\u4E00'..'\u9FFF' || character in '\u3400'..'\u4DBF' -> han++
             character in 'A'..'Z' || character in 'a'..'z' -> latin++
         }
     }
@@ -929,7 +929,9 @@ private fun ModelSettings(
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = "Назад") }
+            IconButton(onClick = onBack) {
+                Icon(Icons.Default.ArrowBack, contentDescription = "Назад")
+            }
             Text("Локальная модель", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         }
 
@@ -1021,7 +1023,9 @@ private fun HistoryScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = "Назад") }
+            IconButton(onClick = onBack) {
+                Icon(Icons.Default.ArrowBack, contentDescription = "Назад")
+            }
             Text(
                 "История",
                 modifier = Modifier.weight(1f),
