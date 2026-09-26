@@ -1,0 +1,27 @@
+name: Patch OCR word-level refinement
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/patch_ocr_wordlevel.py'
+      - '.github/workflows/patch-ocr-wordlevel.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply OCR word-level patch
+        run: python .github/patch_ocr_wordlevel.py
+      - name: Commit OCR word-level refinement
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm .github/patch_ocr_wordlevel.py .github/workflows/patch-ocr-wordlevel.yml
+          git add -A
+          git commit -m "Improve camera OCR word recognition"
+          git push
