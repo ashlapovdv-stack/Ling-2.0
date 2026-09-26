@@ -1,0 +1,25 @@
+name: Fix OCR line rebuild compile
+
+on:
+  push:
+    paths:
+      - 'scripts/fix_ocr_line_rebuild_compile.py'
+      - '.github/workflows/fix-ocr-line-rebuild-compile.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply compile fix
+        run: python scripts/fix_ocr_line_rebuild_compile.py
+      - name: Commit compile fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/ling20/translator/CameraOcr.kt
+          git diff --cached --quiet || git commit -m "Fix OCR line reconstruction compile"
+          git push
