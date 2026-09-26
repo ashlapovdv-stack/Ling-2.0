@@ -34,11 +34,11 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Translate
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -309,6 +309,10 @@ private fun TranslatorScreen(
     onClearResult: () -> Unit,
 ) {
     val context = LocalContext.current
+    val tts = rememberOfflineTextToSpeech()
+    val sourceSpeechLanguage = source.language ?: runCatching {
+        detectSupportedLanguage(input)
+    }.getOrNull()
 
     Column(
         modifier = Modifier
@@ -332,6 +336,17 @@ private fun TranslatorScreen(
             enabled = !translating,
             speechLanguage = source.language,
             onInputChanged = onInputChanged,
+            onSpeak = {
+                if (sourceSpeechLanguage != null) {
+                    tts.speak(input, sourceSpeechLanguage)
+                } else {
+                    Toast.makeText(
+                        context,
+                        "Не удалось определить язык для озвучивания.",
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                }
+            },
             onCopy = {
                 if (input.isNotBlank()) {
                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -375,6 +390,7 @@ private fun TranslatorScreen(
             TranslationResultCard(
                 target = target,
                 output = output,
+                onSpeak = { tts.speak(output, target) },
                 onCopy = {
                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                     clipboard.setPrimaryClip(ClipData.newPlainText("Ling translation", output))
@@ -568,6 +584,7 @@ private fun InputCard(
     enabled: Boolean,
     speechLanguage: Language?,
     onInputChanged: (String) -> Unit,
+    onSpeak: () -> Unit,
     onCopy: () -> Unit,
     onClear: () -> Unit,
 ) {
@@ -635,10 +652,13 @@ private fun InputCard(
                     currentText = input,
                     onTextChanged = onInputChanged,
                 )
-                IconButton(enabled = false, onClick = {}) {
+                IconButton(
+                    enabled = enabled && input.isNotBlank(),
+                    onClick = onSpeak,
+                ) {
                     Icon(
-                        Icons.Default.Image,
-                        contentDescription = "Перевод изображения — следующий этап",
+                        Icons.Default.VolumeUp,
+                        contentDescription = "Озвучить исходный текст",
                     )
                 }
                 Spacer(Modifier.weight(1f))
@@ -669,6 +689,7 @@ private fun InputCard(
 private fun TranslationResultCard(
     target: Language,
     output: String,
+    onSpeak: () -> Unit,
     onCopy: () -> Unit,
     onClear: () -> Unit,
 ) {
@@ -716,20 +737,23 @@ private fun TranslationResultCard(
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                ResultActionButton(
-                    text = "Копировать",
-                    icon = Icons.Default.ContentCopy,
-                    onClick = onCopy,
-                    modifier = Modifier.weight(1f),
+                ResultIconButton(
+                    icon = Icons.Default.VolumeUp,
+                    contentDescription = "Озвучить перевод",
+                    onClick = onSpeak,
                 )
-                ResultActionButton(
-                    text = "Очистить",
+                ResultIconButton(
+                    icon = Icons.Default.ContentCopy,
+                    contentDescription = "Копировать перевод",
+                    onClick = onCopy,
+                )
+                ResultIconButton(
                     icon = Icons.Default.Delete,
+                    contentDescription = "Очистить перевод",
                     onClick = onClear,
-                    modifier = Modifier.weight(1f),
                 )
             }
         }
@@ -737,26 +761,16 @@ private fun TranslationResultCard(
 }
 
 @Composable
-private fun ResultActionButton(
-    text: String,
+private fun ResultIconButton(
     icon: ImageVector,
+    contentDescription: String,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier,
 ) {
-    OutlinedButton(
-        onClick = onClick,
-        modifier = modifier.height(48.dp),
-        shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(1.dp, Color(0xFFC8D9F5)),
-        contentPadding = PaddingValues(horizontal = 8.dp),
-    ) {
-        Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
-        Text(
-            text = text,
-            modifier = Modifier.padding(start = 7.dp),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            style = MaterialTheme.typography.labelLarge,
+    IconButton(onClick = onClick) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            tint = MaterialTheme.colorScheme.primary,
         )
     }
 }
