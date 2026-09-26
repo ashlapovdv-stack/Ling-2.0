@@ -1,9 +1,11 @@
+import java.util.Base64
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-val prepareLauncherIcon by tasks.registering {
+val prepareLauncherIcon = tasks.register("prepareLauncherIcon") {
     val encodedIcon = layout.projectDirectory.file("src/main/launcher_icon.b64")
     val outputIcon = layout.projectDirectory.file("src/main/res/drawable-nodpi/ic_launcher.jpg")
 
@@ -14,7 +16,7 @@ val prepareLauncherIcon by tasks.registering {
         val outputFile = outputIcon.asFile
         outputFile.parentFile.mkdirs()
         val encoded = encodedIcon.asFile.readText().filterNot { it.isWhitespace() }
-        outputFile.writeBytes(java.util.Base64.getDecoder().decode(encoded))
+        outputFile.writeBytes(Base64.getDecoder().decode(encoded))
     }
 }
 
