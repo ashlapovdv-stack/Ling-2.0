@@ -2,7 +2,6 @@ from pathlib import Path
 
 ocr_path = Path('app/src/main/java/com/ling20/translator/CameraOcr.kt')
 gradle_path = Path('app/build.gradle.kts')
-workflow_path = Path('.github/workflows/android-build.yml')
 
 text = ocr_path.read_text()
 
@@ -40,8 +39,3 @@ assert 'versionCode = 19' in gradle and 'versionName = "0.1.15.3"' in gradle
 gradle = gradle.replace('versionCode = 19', 'versionCode = 20', 1)
 gradle = gradle.replace('versionName = "0.1.15.3"', 'versionName = "0.1.15.4"', 1)
 gradle_path.write_text(gradle)
-
-workflow = workflow_path.read_text()
-workflow = workflow.replace('TESSDATA_COMMIT="87416418657359cb625c412a48b6e1d6d41c29bd"', 'TESSDATA_COMMIT="e12c65a915945e4c28e237a9b52bc4a8f39a0cec"', 1)
-workflow = workflow.replace('tesseract-ocr/tessdata_fast/${TESSDATA_COMMIT}', 'tesseract-ocr/tessdata_best/${TESSDATA_COMMIT}', 1)
-workflow_path.write_text(workflow)
