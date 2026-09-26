@@ -6,6 +6,7 @@ import android.content.Context
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -15,11 +16,14 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
@@ -46,7 +50,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -61,7 +64,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -74,6 +79,14 @@ import java.util.Locale
 
 private enum class AppSection { TRANSLATE, CAMERA, DIALOG, SETTINGS }
 private enum class SettingsPage { ROOT, MODEL, HISTORY }
+
+private val ScreenBackground = Color(0xFFF5F8FC)
+private val CardBorder = Color(0xFFE3E8EF)
+private val SuccessBackground = Color(0xFFE7F7ED)
+private val SuccessForeground = Color(0xFF1F8B54)
+private val WaitingBackground = Color(0xFFFFF5DF)
+private val WaitingForeground = Color(0xFFAD7218)
+private val ResultBackground = Color(0xFFEAF2FF)
 
 @Composable
 fun LingApp(
@@ -106,7 +119,7 @@ fun LingApp(
     }
 
     Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
+        containerColor = ScreenBackground,
         bottomBar = {
             BottomModes(section) { next ->
                 section = next
@@ -193,81 +206,49 @@ private fun TranslatorScreen(
     val target = Language.valueOf(targetName)
 
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 18.dp, vertical = 18.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Header(engineReady, modelLoading)
+        TranslatorHeader(engineReady = engineReady, modelLoading = modelLoading)
 
-        Row(
-            Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            LanguagePicker(source, { chosen ->
+        LanguageRow(
+            source = source,
+            target = target,
+            enabled = !translating,
+            onSourceSelected = { chosen ->
                 sourceName = chosen.name
-                if (chosen == target) targetName = Language.entries.first { it != chosen }.name
-            }, Modifier.weight(1f))
-
-            IconButton(
-                enabled = !translating,
-                onClick = {
-                    val oldSource = sourceName
-                    sourceName = targetName
-                    targetName = oldSource
-                    if (output.isNotBlank() && engineReady) {
-                        val oldInput = input
-                        input = output
-                        output = oldInput
-                    }
-                },
-            ) {
-                Icon(Icons.Default.SwapHoriz, "Поменять языки")
-            }
-
-            LanguagePicker(target, { chosen ->
+                if (chosen == target) {
+                    targetName = Language.entries.first { it != chosen }.name
+                }
+            },
+            onTargetSelected = { chosen ->
                 targetName = chosen.name
-                if (chosen == source) sourceName = Language.entries.first { it != chosen }.name
-            }, Modifier.weight(1f))
-        }
-
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(22.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        ) {
-            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("Исходный текст", style = MaterialTheme.typography.labelLarge)
-                    Text("${input.length} / 5000", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (chosen == source) {
+                    sourceName = Language.entries.first { it != chosen }.name
                 }
-
-                OutlinedTextField(
-                    value = input,
-                    onValueChange = { value -> if (value.length <= 5000 && !translating) input = value },
-                    modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("Введите текст") },
-                    minLines = 5,
-                    maxLines = 10,
-                    enabled = !translating,
-                )
-
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Row {
-                        IconButton(enabled = false, onClick = {}) {
-                            Icon(Icons.Default.Mic, "Голосовой ввод")
-                        }
-                        IconButton(enabled = false, onClick = {}) {
-                            Icon(Icons.Default.Image, "Изображение")
-                        }
-                    }
-                    Icon(Icons.Default.Keyboard, null)
+            },
+            onSwap = {
+                val oldSource = sourceName
+                sourceName = targetName
+                targetName = oldSource
+                if (output.isNotBlank() && engineReady) {
+                    val oldInput = input
+                    input = output
+                    output = oldInput
                 }
-            }
-        }
+            },
+        )
+
+        InputCard(
+            input = input,
+            enabled = !translating,
+            onInputChanged = { value ->
+                if (value.length <= 5000 && !translating) input = value
+            },
+        )
 
         Button(
             onClick = {
@@ -297,123 +278,406 @@ private fun TranslatorScreen(
         ) {
             if (translating) {
                 CircularProgressIndicator(
-                    Modifier.size(22.dp),
+                    modifier = Modifier.size(22.dp),
                     strokeWidth = 2.dp,
                     color = MaterialTheme.colorScheme.onPrimary,
                 )
-                Text("  Перевожу…")
+                Text(
+                    "  Перевожу…",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
             } else {
-                Icon(Icons.Default.Translate, null)
-                Text("  Перевести")
+                Icon(Icons.Default.Translate, contentDescription = null)
+                Text(
+                    "  Перевести",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
             }
         }
 
         if (output.isNotBlank()) {
-            Card(
-                Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(22.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
-                ),
-            ) {
-                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("Перевод (${target.displayName})", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(output, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = {
-                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            clipboard.setPrimaryClip(ClipData.newPlainText("Ling translation", output))
-                            Toast.makeText(context, "Перевод скопирован", Toast.LENGTH_SHORT).show()
-                        }) {
-                            Icon(Icons.Default.ContentCopy, null)
-                            Text("  Копировать")
-                        }
-                        OutlinedButton(onClick = { output = "" }) {
-                            Icon(Icons.Default.Delete, null)
-                            Text("  Очистить")
-                        }
-                    }
-                }
-            }
+            TranslationResultCard(
+                target = target,
+                output = output,
+                onCopy = {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("Ling translation", output))
+                    Toast.makeText(context, "Перевод скопирован", Toast.LENGTH_SHORT).show()
+                },
+                onClear = { output = "" },
+            )
+        } else {
+            EmptyResultHint(target)
         }
 
-        Text(
-            "RU • EN • 中文 · офлайн",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        Spacer(Modifier.height(6.dp))
     }
 }
 
 @Composable
-private fun Header(engineReady: Boolean, modelLoading: Boolean) {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+private fun TranslatorHeader(engineReady: Boolean, modelLoading: Boolean) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(
-            Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            Text("Ling 2.0", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
-            Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.primaryContainer) {
-                Text("AI · Локальная модель", Modifier.padding(horizontal = 10.dp, vertical = 8.dp))
+            Text(
+                "Ling 2.0",
+                style = MaterialTheme.typography.headlineLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Spacer(Modifier.weight(1f))
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = Color(0xFFE5EEFC),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
+                    Text(
+                        "AI",
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                    Text(
+                        "Локальная модель",
+                        color = Color(0xFF354052),
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
             }
         }
 
         Surface(
-            Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(16.dp),
-            color = if (engineReady) Color(0xFFE5F6EC) else Color(0xFFFFF4DD),
+            color = if (engineReady) SuccessBackground else WaitingBackground,
         ) {
-            Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 if (modelLoading) {
-                    CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(19.dp),
+                        strokeWidth = 2.dp,
+                        color = WaitingForeground,
+                    )
                 } else {
                     Icon(
                         Icons.Default.CheckCircle,
-                        null,
-                        tint = if (engineReady) Color(0xFF208A53) else Color(0xFFB7791F),
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp),
+                        tint = if (engineReady) SuccessForeground else WaitingForeground,
                     )
                 }
                 Text(
-                    when {
-                        modelLoading -> "  Загружаю локальную модель…"
-                        engineReady -> "  Офлайн · модель загружена"
-                        else -> "  Офлайн · выберите модель в настройках"
+                    text = when {
+                        modelLoading -> "Загружаю локальную модель…"
+                        engineReady -> "Офлайн · модель загружена"
+                        else -> "Офлайн · выберите модель в настройках"
                     },
-                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.padding(start = 9.dp),
+                    color = if (engineReady) SuccessForeground else WaitingForeground,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun LanguageRow(
+    source: Language,
+    target: Language,
+    enabled: Boolean,
+    onSourceSelected: (Language) -> Unit,
+    onTargetSelected: (Language) -> Unit,
+    onSwap: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(9.dp),
+    ) {
+        LanguagePicker(
+            language = source,
+            enabled = enabled,
+            onSelected = onSourceSelected,
+            modifier = Modifier.weight(1f),
+        )
+
+        Surface(
+            modifier = Modifier
+                .size(46.dp)
+                .clickable(enabled = enabled, onClick = onSwap),
+            shape = CircleShape,
+            color = Color(0xFFE5EEFC),
+            contentColor = MaterialTheme.colorScheme.primary,
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    Icons.Default.SwapHoriz,
+                    contentDescription = "Поменять языки",
+                    modifier = Modifier.size(23.dp),
+                )
+            }
+        }
+
+        LanguagePicker(
+            language = target,
+            enabled = enabled,
+            onSelected = onTargetSelected,
+            modifier = Modifier.weight(1f),
+        )
     }
 }
 
 @Composable
 private fun LanguagePicker(
     language: Language,
+    enabled: Boolean,
     onSelected: (Language) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var expanded by remember { mutableStateOf(false) }
-    Box(modifier) {
-        OutlinedButton(
-            onClick = { expanded = true },
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
+
+    Box(modifier = modifier) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(52.dp)
+                .clickable(enabled = enabled) { expanded = true },
+            shape = RoundedCornerShape(17.dp),
+            color = Color.White,
+            border = BorderStroke(1.dp, CardBorder),
         ) {
-            Text("${language.flag()} ${language.displayName}", maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Spacer(Modifier.weight(1f))
-            Icon(Icons.Default.ExpandMore, null)
+            Row(
+                modifier = Modifier.padding(horizontal = 13.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(language.flag(), style = MaterialTheme.typography.titleMedium)
+                Text(
+                    language.displayName,
+                    modifier = Modifier.padding(start = 7.dp).weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Icon(
+                    Icons.Default.ExpandMore,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
             Language.entries.forEach { item ->
                 DropdownMenuItem(
-                    text = { Text("${item.flag()} ${item.displayName}") },
+                    text = { Text("${item.flag()}  ${item.displayName}") },
                     onClick = {
                         expanded = false
                         onSelected(item)
                     },
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun InputCard(
+    input: String,
+    enabled: Boolean,
+    onInputChanged: (String) -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 17.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "Исходный текст",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color(0xFF475467),
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    "${input.length} / 5000",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color(0xFF98A2B3),
+                )
+            }
+
+            BasicTextField(
+                value = input,
+                onValueChange = onInputChanged,
+                enabled = enabled,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 142.dp),
+                textStyle = TextStyle(
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontSize = MaterialTheme.typography.bodyLarge.fontSize,
+                    lineHeight = MaterialTheme.typography.bodyLarge.lineHeight,
+                ),
+                decorationBox = { innerTextField ->
+                    Box(Modifier.fillMaxSize()) {
+                        if (input.isEmpty()) {
+                            Text(
+                                "Введите текст…",
+                                color = Color(0xFF98A2B3),
+                                style = MaterialTheme.typography.bodyLarge,
+                            )
+                        }
+                        innerTextField()
+                    }
+                },
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(enabled = false, onClick = {}) {
+                    Icon(
+                        Icons.Default.Mic,
+                        contentDescription = "Голосовой ввод — следующий этап",
+                    )
+                }
+                IconButton(enabled = false, onClick = {}) {
+                    Icon(
+                        Icons.Default.Image,
+                        contentDescription = "Перевод изображения — следующий этап",
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                Icon(
+                    Icons.Default.Keyboard,
+                    contentDescription = null,
+                    modifier = Modifier.size(21.dp),
+                    tint = Color(0xFF98A2B3),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TranslationResultCard(
+    target: Language,
+    output: String,
+    onCopy: () -> Unit,
+    onClear: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = ResultBackground),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "Перевод (${target.displayName})",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color(0xFF475467),
+                )
+                Spacer(Modifier.weight(1f))
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = Color.White.copy(alpha = 0.72f),
+                ) {
+                    Text(
+                        "AI",
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        color = MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+            }
+
+            Text(
+                output,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+
+            Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                OutlinedButton(
+                    onClick = onCopy,
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.dp, Color(0xFFC8D9F5)),
+                ) {
+                    Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Text("  Копировать")
+                }
+                OutlinedButton(
+                    onClick = onClear,
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.dp, Color(0xFFC8D9F5)),
+                ) {
+                    Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Text("  Очистить")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmptyResultHint(target: Language) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        color = Color(0xFFF0F4F9),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Text(
+                "Перевод (${target.displayName})",
+                style = MaterialTheme.typography.labelLarge,
+                color = Color(0xFF667085),
+            )
+            Text(
+                "Результат появится здесь",
+                style = MaterialTheme.typography.bodyLarge,
+                color = Color(0xFF98A2B3),
+            )
         }
     }
 }
@@ -427,13 +691,16 @@ private fun Language.flag() = when (this) {
 @Composable
 private fun ComingSoon(title: String, description: String, camera: Boolean) {
     Column(
-        Modifier.fillMaxSize().padding(24.dp),
+        modifier = Modifier.fillMaxSize().padding(24.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.primaryContainer) {
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.primaryContainer,
+        ) {
             Box(Modifier.padding(22.dp)) {
-                Icon(if (camera) Icons.Default.CameraAlt else Icons.Default.Mic, null)
+                Icon(if (camera) Icons.Default.CameraAlt else Icons.Default.Mic, contentDescription = null)
             }
         }
         Spacer(Modifier.height(18.dp))
@@ -454,13 +721,16 @@ private fun SettingsRoot(
     onHistory: () -> Unit,
 ) {
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Text("Настройки", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
 
         SettingsRow(
-            icon = { Icon(Icons.Default.Translate, null) },
+            icon = { Icon(Icons.Default.Translate, contentDescription = null) },
             title = "Локальная модель",
             subtitle = when {
                 modelLoading -> "Проверяю модель…"
@@ -473,14 +743,14 @@ private fun SettingsRoot(
         )
 
         SettingsRow(
-            icon = { Icon(Icons.Default.History, null) },
+            icon = { Icon(Icons.Default.History, contentDescription = null) },
             title = "История",
             subtitle = if (historyCount == 0) "Переводов пока нет" else "Сохранено: $historyCount",
             onClick = onHistory,
         )
 
         SettingsRow(
-            icon = { Icon(Icons.Default.Settings, null) },
+            icon = { Icon(Icons.Default.Settings, contentDescription = null) },
             title = "О приложении",
             subtitle = "Ling 2.0 · Android · офлайн",
             onClick = null,
@@ -523,11 +793,14 @@ private fun ModelSettings(
     }
 
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Назад") }
+            IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = "Назад") }
             Text("Локальная модель", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         }
 
@@ -584,8 +857,11 @@ private fun SettingsRow(
     onClick: (() -> Unit)?,
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth().then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
         shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
     ) {
         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             icon()
@@ -593,7 +869,7 @@ private fun SettingsRow(
                 Text(title, fontWeight = FontWeight.SemiBold)
                 Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            if (onClick != null) Icon(Icons.Default.ChevronRight, null)
+            if (onClick != null) Icon(Icons.Default.ChevronRight, contentDescription = null)
         }
     }
 }
@@ -605,12 +881,20 @@ private fun HistoryScreen(
     onClear: () -> Unit,
 ) {
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Назад") }
-            Text("История", Modifier.weight(1f), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = "Назад") }
+            Text(
+                "История",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+            )
             if (items.isNotEmpty()) OutlinedButton(onClick = onClear) { Text("Очистить") }
         }
 
@@ -627,7 +911,12 @@ private fun HistoryCard(item: TranslationHistoryItem) {
     val date = remember(item.createdAtMillis) {
         SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date(item.createdAtMillis))
     }
-    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+    ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
                 "${item.source.flag()} ${item.source.displayName} → ${item.target.flag()} ${item.target.displayName}",
@@ -636,22 +925,56 @@ private fun HistoryCard(item: TranslationHistoryItem) {
             )
             Text(item.input)
             Text(item.output, fontWeight = FontWeight.SemiBold)
-            Text(date, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                date,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
 
 @Composable
 private fun BottomModes(selected: AppSection, onSelect: (AppSection) -> Unit) {
-    Surface(tonalElevation = 4.dp, shadowElevation = 8.dp) {
+    Surface(
+        color = Color.White,
+        shadowElevation = 12.dp,
+    ) {
         Row(
-            Modifier.fillMaxWidth().navigationBarsPadding().padding(8.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = 9.dp, vertical = 9.dp),
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
         ) {
-            ModeTile(selected == AppSection.TRANSLATE, "Перевод", { Icon(Icons.Default.Translate, null) }, { onSelect(AppSection.TRANSLATE) }, Modifier.weight(1f))
-            ModeTile(selected == AppSection.CAMERA, "Камера", { Icon(Icons.Default.CameraAlt, null) }, { onSelect(AppSection.CAMERA) }, Modifier.weight(1f))
-            ModeTile(selected == AppSection.DIALOG, "Диалог", { Icon(Icons.Default.Mic, null) }, { onSelect(AppSection.DIALOG) }, Modifier.weight(1f))
-            ModeTile(selected == AppSection.SETTINGS, "Настройки", { Icon(Icons.Default.Settings, null) }, { onSelect(AppSection.SETTINGS) }, Modifier.weight(1f))
+            ModeTile(
+                selected = selected == AppSection.TRANSLATE,
+                label = "Перевод",
+                icon = Icons.Default.Translate,
+                onClick = { onSelect(AppSection.TRANSLATE) },
+                modifier = Modifier.weight(1f),
+            )
+            ModeTile(
+                selected = selected == AppSection.CAMERA,
+                label = "Камера",
+                icon = Icons.Default.CameraAlt,
+                onClick = { onSelect(AppSection.CAMERA) },
+                modifier = Modifier.weight(1f),
+            )
+            ModeTile(
+                selected = selected == AppSection.DIALOG,
+                label = "Диалог",
+                icon = Icons.Default.Mic,
+                onClick = { onSelect(AppSection.DIALOG) },
+                modifier = Modifier.weight(1f),
+            )
+            ModeTile(
+                selected = selected == AppSection.SETTINGS,
+                label = "Настройки",
+                icon = Icons.Default.Settings,
+                onClick = { onSelect(AppSection.SETTINGS) },
+                modifier = Modifier.weight(1f),
+            )
         }
     }
 }
@@ -660,22 +983,32 @@ private fun BottomModes(selected: AppSection, onSelect: (AppSection) -> Unit) {
 private fun ModeTile(
     selected: Boolean,
     label: String,
-    icon: @Composable () -> Unit,
+    icon: ImageVector,
     onClick: () -> Unit,
     modifier: Modifier,
 ) {
     Surface(
-        modifier = modifier.clickable(onClick = onClick),
+        modifier = modifier
+            .height(66.dp)
+            .clickable(onClick = onClick),
         shape = RoundedCornerShape(18.dp),
-        color = if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+        color = if (selected) MaterialTheme.colorScheme.primary else Color(0xFFF2F5F9),
+        contentColor = if (selected) Color.White else Color(0xFF667085),
     ) {
         Column(
-            Modifier.padding(horizontal = 4.dp, vertical = 10.dp),
+            modifier = Modifier.padding(horizontal = 3.dp, vertical = 9.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.Center,
         ) {
-            icon()
-            Text(label, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Icon(icon, contentDescription = null, modifier = Modifier.size(22.dp))
+            Spacer(Modifier.height(4.dp))
+            Text(
+                label,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }
