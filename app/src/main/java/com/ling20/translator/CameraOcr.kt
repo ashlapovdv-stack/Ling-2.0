@@ -371,11 +371,28 @@ internal object CameraOcrEngine {
             var rect: Rect,
         )
 
+        val ordered = lines.sortedWith(
+            compareBy<RawOcrLine> { it.rect.top }.thenBy { it.rect.left },
+        )
         val groups = mutableListOf<MutableBlock>()
-        lines.forEach { line ->
+
+        ordered.forEach { line ->
             val bestGroup = groups
-                .filter { canJoin(it.rect, line.rect) }
-                .minByOrNull { group -> verticalGap(group.rect, line.rect) }
+                .asSequence()
+                .filter { group ->
+                    val lastLine = group.lines.maxByOrNull { it.rect.bottom } ?: return@filter false
+                    canJoinLines(
+                        previous = lastLine,
+                        next = line,
+                        currentBlock = group.rect,
+                        currentLineCount = group.lines.size,
+                        imageHeight = imageHeight,
+                    )
+                }
+                .minByOrNull { group ->
+                    val lastLine = group.lines.maxByOrNull { it.rect.bottom }!!
+                    verticalGap(lastLine.rect, line.rect)
+                }
 
             if (bestGroup == null) {
                 groups += MutableBlock(mutableListOf(line), Rect(line.rect))
@@ -387,6 +404,8 @@ internal object CameraOcrEngine {
 
         val minWidth = max(MIN_BOX_PIXELS, (imageWidth * MIN_BLOCK_WIDTH_FRACTION).roundToInt())
         val minHeight = max(MIN_BOX_PIXELS, (imageHeight * MIN_BLOCK_HEIGHT_FRACTION).roundToInt())
+        val tinyWidth = (imageWidth * TINY_BLOCK_WIDTH_FRACTION).roundToInt()
+        val tinyHeight = (imageHeight * TINY_BLOCK_HEIGHT_FRACTION).roundToInt()
 
         return groups
             .mapNotNull { group ->
@@ -403,8 +422,14 @@ internal object CameraOcrEngine {
                     sortedLines.map { it.confidence }.average().toFloat()
                 }
                 val rect = group.rect
+                val alphanumeric = text.count(Char::isLetterOrDigit)
+                val looksLikeTinyNoise =
+                    rect.width() < tinyWidth &&
+                    rect.height() < tinyHeight &&
+                    alphanumeric < TINY_BLOCK_MIN_CHARS
 
                 if (
+                    !looksLikeTinyNoise &&
                     text.isMeaningfulOcrText() &&
                     rect.width() >= minWidth &&
                     rect.height() >= minHeight &&
@@ -418,20 +443,55 @@ internal object CameraOcrEngine {
             .sortedWith(compareBy<CameraOcrBlock> { it.rect.top }.thenBy { it.rect.left })
     }
 
-    private fun canJoin(existing: Rect, next: Rect): Boolean {
-        val gap = verticalGap(existing, next)
-        val typicalHeight = max(existing.height(), next.height()).coerceAtLeast(1)
-        if (gap < -typicalHeight * 0.45f || gap > typicalHeight * MAX_VERTICAL_GAP_FACTOR) {
+    private fun canJoinLines(
+        previous: RawOcrLine,
+        next: RawOcrLine,
+        currentBlock: Rect,
+        currentLineCount: Int,
+        imageHeight: Int,
+    ): Boolean {
+        if (currentLineCount >= MAX_LINES_PER_BLOCK) return false
+
+        val previousHeight = previous.rect.height().coerceAtLeast(1)
+        val nextHeight = next.rect.height().coerceAtLeast(1)
+        val minHeight = min(previousHeight, nextHeight).toFloat()
+        val maxHeight = max(previousHeight, nextHeight).toFloat()
+        val heightRatio = maxHeight / minHeight
+
+        // Large headings, percentages and normal paragraph text should not be
+        // swallowed into one giant overlay block.
+        if (heightRatio > MAX_LINE_HEIGHT_RATIO) return false
+
+        val gap = verticalGap(previous.rect, next.rect)
+        val typicalHeight = max(previousHeight, nextHeight)
+        if (gap < -typicalHeight * MAX_LINE_OVERLAP_FACTOR) return false
+        if (gap > typicalHeight * MAX_VERTICAL_GAP_FACTOR) return false
+
+        val prospectiveTop = min(currentBlock.top, next.rect.top)
+        val prospectiveBottom = max(currentBlock.bottom, next.rect.bottom)
+        if (prospectiveBottom - prospectiveTop > imageHeight * MAX_BLOCK_HEIGHT_FRACTION) {
             return false
         }
 
-        val horizontalOverlap = overlapLength(existing.left, existing.right, next.left, next.right)
+        val horizontalOverlap = overlapLength(
+            previous.rect.left,
+            previous.rect.right,
+            next.rect.left,
+            next.rect.right,
+        )
         val overlapRatio = horizontalOverlap.toFloat() /
-            min(existing.width(), next.width()).coerceAtLeast(1)
-        val alignedLeft = abs(existing.left - next.left) <= typicalHeight * LEFT_ALIGNMENT_FACTOR
-        val alignedRight = abs(existing.right - next.right) <= typicalHeight * LEFT_ALIGNMENT_FACTOR
+            min(previous.rect.width(), next.rect.width()).coerceAtLeast(1)
+        val alignedLeft = abs(previous.rect.left - next.rect.left) <= typicalHeight * LEFT_ALIGNMENT_FACTOR
+        val alignedRight = abs(previous.rect.right - next.rect.right) <= typicalHeight * LEFT_ALIGNMENT_FACTOR
+        val centersClose = abs(
+            (previous.rect.left + previous.rect.right) / 2f -
+                (next.rect.left + next.rect.right) / 2f,
+        ) <= max(previous.rect.width(), next.rect.width()) * CENTER_ALIGNMENT_FACTOR
 
-        return overlapRatio >= MIN_HORIZONTAL_OVERLAP || alignedLeft || alignedRight
+        return overlapRatio >= MIN_HORIZONTAL_OVERLAP ||
+            alignedLeft ||
+            alignedRight ||
+            centersClose
     }
 
     private fun verticalGap(a: Rect, b: Rect): Int = when {
@@ -536,8 +596,16 @@ internal object CameraOcrEngine {
     private const val LONG_TEXT_OVERRIDE = 14
     private const val DUPLICATE_IOU = 0.46f
     private const val MIN_HORIZONTAL_OVERLAP = 0.18f
-    private const val MAX_VERTICAL_GAP_FACTOR = 1.25f
-    private const val LEFT_ALIGNMENT_FACTOR = 1.5f
+    private const val MAX_VERTICAL_GAP_FACTOR = 0.72f
+    private const val LEFT_ALIGNMENT_FACTOR = 0.85f
+    private const val CENTER_ALIGNMENT_FACTOR = 0.22f
+    private const val MAX_LINE_HEIGHT_RATIO = 1.75f
+    private const val MAX_LINE_OVERLAP_FACTOR = 0.35f
+    private const val MAX_BLOCK_HEIGHT_FRACTION = 0.16f
+    private const val MAX_LINES_PER_BLOCK = 5
+    private const val TINY_BLOCK_WIDTH_FRACTION = 0.035f
+    private const val TINY_BLOCK_HEIGHT_FRACTION = 0.012f
+    private const val TINY_BLOCK_MIN_CHARS = 4
     private const val MIN_BLOCK_WIDTH_FRACTION = 0.012f
     private const val MIN_BLOCK_HEIGHT_FRACTION = 0.004f
 }
