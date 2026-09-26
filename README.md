@@ -25,7 +25,7 @@ The app has four bottom navigation tiles:
 1. **Перевод** — text translation
 2. **Камера** — live camera / gallery capture, with offline OCR and translation being added incrementally
 3. **Диалог** — two-way voice conversation translation (later phase)
-4. **Настройки** — translation defaults, local model, app information and **Настройки → История**
+4. **Настройки** — translation and camera defaults, local model, app information and **Настройки → История**
 
 History is intentionally not a separate bottom navigation item.
 
@@ -43,6 +43,7 @@ Implemented and CI-build verified:
 - local translation history (up to 200 successful translations)
 - Settings → History with clear-history action
 - Settings → Translation with default input/output languages
+- Settings → Camera with independent default input/output languages
 - Settings → Local model
 - Android Storage Access Framework picker for `.gguf` models
 - GGUF header validation and copy into app-private storage
@@ -54,7 +55,7 @@ Implemented and CI-build verified:
 - inference runs off the UI thread
 - no server/API translation fallback
 - no Android `INTERNET` permission
-- Camera stage 1: live CameraX preview, runtime camera permission, photo capture and gallery image selection
+- Camera stage 1: full-screen CameraX preview, runtime camera permission, photo capture, gallery image selection and front/back camera switching
 
 Camera OCR/translation and Dialog mode are the next implementation phases.
 
@@ -91,6 +92,7 @@ GGUF model in app-private storage
 
 Settings
   ├─ Translation defaults
+  ├─ Camera defaults
   ├─ Local model
   └─ History
        ↓
