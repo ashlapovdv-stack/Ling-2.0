@@ -40,6 +40,9 @@ jobs:
             "ndk;29.0.14206865" \
             "cmake;3.31.6"
 
+      - name: Prepare stable debug signing
+        run: base64 --decode .github/ling-debug-keystore.b64 > app/ling-debug.keystore
+
       - name: Assemble debug APK
         run: gradle :app:assembleDebug --stacktrace
 
