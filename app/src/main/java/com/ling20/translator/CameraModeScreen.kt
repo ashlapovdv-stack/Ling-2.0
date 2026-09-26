@@ -3,7 +3,6 @@ package com.ling20.translator
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
-import android.graphics.ImageDecoder
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -38,6 +37,7 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -117,6 +117,9 @@ internal fun CameraModeScreen(
         )
     }
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
+    var ocrResult by remember { mutableStateOf<CameraOcrResult?>(null) }
+    var ocrRunning by remember { mutableStateOf(false) }
+    var ocrError by rememberSaveable { mutableStateOf<String?>(null) }
 
     val source = CameraSourceLanguage.valueOf(sourceName)
     val target = Language.valueOf(targetName)
@@ -141,6 +144,34 @@ internal fun CameraModeScreen(
         if (!hasCameraPermission) permissionLauncher.launch(Manifest.permission.CAMERA)
     }
 
+    LaunchedEffect(selectedImageUri, source.language) {
+        val uri = selectedImageUri
+        if (uri == null) {
+            ocrResult = null
+            ocrRunning = false
+            ocrError = null
+        } else {
+            ocrResult = null
+            ocrRunning = true
+            ocrError = null
+            runCatching {
+                CameraOcrEngine.recognize(
+                    context = context.applicationContext,
+                    uriString = uri,
+                    sourceLanguage = source.language,
+                )
+            }.onSuccess { result ->
+                ocrResult = result
+                if (result.blocks.isEmpty()) {
+                    ocrError = "Текстовые блоки не найдены. Попробуйте приблизить текст или улучшить освещение."
+                }
+            }.onFailure { error ->
+                ocrError = "Ошибка OCR: ${error.message ?: "неизвестная ошибка"}"
+            }
+            ocrRunning = false
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -149,6 +180,12 @@ internal fun CameraModeScreen(
         when {
             selectedImageUri != null -> {
                 SelectedCameraImage(selectedImageUri!!)
+                ocrResult?.let { result ->
+                    CameraOcrOverlay(
+                        result = result,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
             }
 
             hasCameraPermission -> {
@@ -233,6 +270,17 @@ internal fun CameraModeScreen(
             }
         }
 
+        if (selectedImageUri != null && cameraError == null) {
+            CameraOcrStatus(
+                running = ocrRunning,
+                result = ocrResult,
+                error = ocrError,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 78.dp, start = 18.dp, end = 18.dp),
+            )
+        }
+
         Box(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -283,6 +331,42 @@ internal fun CameraModeScreen(
                 .align(Alignment.BottomCenter)
                 .padding(horizontal = 24.dp, vertical = 18.dp),
         )
+    }
+}
+
+@Composable
+private fun CameraOcrStatus(
+    running: Boolean,
+    result: CameraOcrResult?,
+    error: String?,
+    modifier: Modifier = Modifier,
+) {
+    val message = when {
+        running -> "Распознаю текст…"
+        error != null -> error
+        result != null -> "OCR: найдено ${result.blocks.size} текстовых блоков"
+        else -> return
+    }
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(14.dp),
+        color = if (error != null) Color(0xD9B42318) else CameraOverlayStrong,
+        contentColor = Color.White,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(9.dp),
+        ) {
+            if (running) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 2.dp,
+                    color = Color.White,
+                )
+            }
+            Text(message, style = MaterialTheme.typography.bodySmall)
+        }
     }
 }
 
@@ -524,15 +608,7 @@ private fun SelectedCameraImage(uriString: String) {
     ) {
         value = withContext(Dispatchers.IO) {
             runCatching {
-                val uri = Uri.parse(uriString)
-                val source = if (uri.scheme == "file") {
-                    ImageDecoder.createSource(File(requireNotNull(uri.path)))
-                } else {
-                    ImageDecoder.createSource(context.contentResolver, uri)
-                }
-                ImageDecoder.decodeBitmap(source) { decoder, _, _ ->
-                    decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
-                }.asImageBitmap()
+                loadCameraBitmap(context, uriString).asImageBitmap()
             }.getOrNull()
         }
     }
