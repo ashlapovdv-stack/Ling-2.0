@@ -1,0 +1,25 @@
+name: Patch camera OCR line rebuild
+
+on:
+  push:
+    paths:
+      - 'scripts/patch_camera_ocr_line_rebuild.py'
+      - '.github/workflows/patch-camera-ocr-line-rebuild.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rebuild OCR lines from word geometry
+        run: python scripts/patch_camera_ocr_line_rebuild.py
+      - name: Commit OCR line reconstruction
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/ling20/translator/CameraOcr.kt app/build.gradle.kts
+          git diff --cached --quiet || git commit -m "Rebuild OCR lines from word geometry"
+          git push
