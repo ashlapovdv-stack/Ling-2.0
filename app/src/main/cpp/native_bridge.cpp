@@ -15,6 +15,7 @@ namespace {
 constexpr const char * LOG_TAG = "LingLlama";
 constexpr uint32_t CONTEXT_SIZE = 4096;
 constexpr uint32_t BATCH_SIZE = 512;
+constexpr int MAX_GENERATION_TOKENS = 1792;
 
 std::mutex g_mutex;
 llama_model * g_model = nullptr;
@@ -124,13 +125,13 @@ std::string generate_locked(const std::string & raw_prompt, int max_tokens) {
     if (g_model == nullptr || g_vocab == nullptr) throw std::runtime_error("Модель не загружена");
     if (raw_prompt.empty()) throw std::runtime_error("Пустой запрос");
 
-    max_tokens = std::clamp(max_tokens, 16, 1024);
+    max_tokens = std::clamp(max_tokens, 16, MAX_GENERATION_TOKENS);
     const std::string prompt = apply_chat_template(raw_prompt);
     std::vector<llama_token> prompt_tokens = tokenize(prompt);
 
     if (prompt_tokens.empty()) throw std::runtime_error("Не удалось токенизировать запрос");
     if (prompt_tokens.size() + static_cast<size_t>(max_tokens) + 8 > CONTEXT_SIZE) {
-        throw std::runtime_error("Текст слишком длинный для контекста 4096 токенов");
+        throw std::runtime_error("Фрагмент текста слишком длинный для контекста 4096 токенов");
     }
 
     llama_context_params ctx_params = llama_context_default_params();
@@ -151,8 +152,6 @@ std::string generate_locked(const std::string & raw_prompt, int max_tokens) {
             throw std::runtime_error("Encoder-decoder модели пока не поддерживаются");
         }
 
-        // Translation should be stable and reproducible. Greedy decoding avoids
-        // creative alternatives and makes repeated translations deterministic.
         llama_sampler_chain_params sampler_params = llama_sampler_chain_default_params();
         sampler_params.no_perf = true;
         sampler = llama_sampler_chain_init(sampler_params);
