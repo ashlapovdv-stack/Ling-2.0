@@ -2,46 +2,82 @@
 
 Offline neural translator for Android.
 
-## MVP goals
+## Product scope
 
-- Android only
-- Fully offline after a model is installed on the device
-- Russian, English and Chinese (Simplified)
-- Local neural-network inference
-- No server/API dependency for translation
-- Model layer isolated from UI so the model can be upgraded later
+Ling 2.0 is an Android-only translator designed to work locally on the device.
 
-## Planned stack
+Supported languages:
 
-- Kotlin
-- Jetpack Compose + Material 3
-- Local GGUF inference through llama.cpp / Android NDK
-- Initial model target: Qwen3-0.6B Instruct, quantized GGUF
+- Russian
+- English
+- Simplified Chinese
 
-## Translation directions
+Planned translation directions:
 
 - Russian ↔ English
 - Russian ↔ Chinese
 - English ↔ Chinese
 
+## Main modes
+
+The app has four bottom navigation tiles:
+
+1. **Перевод** — text translation (phase 1)
+2. **Камера** — translation from a camera photo or gallery image (later phase)
+3. **Диалог** — two-way voice conversation translation (later phase)
+4. **Настройки** — model information, app information and **Настройки → История**
+
+History is intentionally not a separate bottom navigation item.
+
+## Phase 1
+
+Implemented foundation:
+
+- Kotlin + Jetpack Compose + Material 3 UI
+- Russian / English / Chinese language selection
+- source/target language swap
+- text input up to 5000 characters
+- model-independent `TranslationEngine`
+- offline status/model state in the UI
+- translation result card with copy and clear actions
+- local translation history storage (up to 200 successful translations)
+- Settings → History screen with clear-history action
+- placeholders for Camera and Dialog so the navigation architecture does not need to be redesigned later
+- no server translation fallback
+
+Still required to complete phase 1:
+
+- llama.cpp Android/JNI integration
+- local GGUF loading
+- real on-device neural translation
+- model lifecycle/error handling and performance tuning
+
+## Planned inference stack
+
+- Local GGUF inference through llama.cpp / Android NDK
+- Initial model target: Qwen3-0.6B-class multilingual GGUF, subject to device performance testing
+- Large model files must not be committed to Git
+
 ## Architecture
 
 ```text
-UI (Compose)
+Compose UI
   ↓
-TranslatorViewModel / state
+App state / navigation
   ↓
 TranslationEngine
   ↓
-LlamaCppTranslationEngine (JNI)
+LlamaCppTranslationEngine (JNI)  ← next implementation slice
   ↓
 GGUF model stored locally on device
+
+Settings
+  ↓
+History
+  ↓
+Local SharedPreferences storage
 ```
 
-## Current status
+## Privacy / offline principle
 
-Project bootstrap. The first UI and the model-independent translation interface are being added. Neural inference is the next implementation step.
-
-## Model policy
-
-Large model files must not be committed to Git. The app will load a GGUF model from app storage / user-selected local storage.
+The Android manifest does not request Internet access. Translation, history and future speech/OCR functionality are intended to run locally on the device.
