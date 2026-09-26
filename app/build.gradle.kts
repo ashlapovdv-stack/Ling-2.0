@@ -74,7 +74,9 @@ android {
 }
 
 dependencies {
-    val composeBom = platform("androidx.compose:compose-bom:2026.09.00")
+    // Compose 1.9 is kept deliberately for stable compileSdk 36 support.
+    // Compose 1.12+ requires compileSdk 37.
+    val composeBom = platform("androidx.compose:compose-bom:2025.08.00")
     implementation(composeBom)
 
     implementation("androidx.activity:activity-compose:1.13.0")
