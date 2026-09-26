@@ -22,44 +22,45 @@ Translation directions:
 
 The app has four bottom navigation tiles:
 
-1. **Перевод** — text translation (phase 1)
-2. **Камера** — translation from a camera photo or gallery image (later phase)
+1. **Перевод** — text translation
+2. **Камера** — live camera / gallery capture, with offline OCR and translation being added incrementally
 3. **Диалог** — two-way voice conversation translation (later phase)
-4. **Настройки** — local model, app information and **Настройки → История**
+4. **Настройки** — translation defaults, local model, app information and **Настройки → История**
 
 History is intentionally not a separate bottom navigation item.
 
-## Phase 1 status
+## Current status
 
 Implemented and CI-build verified:
 
 - Kotlin + Jetpack Compose + Material 3 UI
 - Russian / English / Chinese language selection
+- automatic source-language detection for text translation
 - source/target language swap
 - text input up to 5000 characters
+- offline on-device speech input where supported by Android
+- offline Android TTS voices only
 - local translation history (up to 200 successful translations)
 - Settings → History with clear-history action
+- Settings → Translation with default input/output languages
 - Settings → Local model
 - Android Storage Access Framework picker for `.gguf` models
 - GGUF header validation and copy into app-private storage
 - llama.cpp pinned as a Git submodule
 - Android NDK/CMake JNI bridge
 - CPU-only on-device model loading and token generation
+- TranslateGemma-specific translation prompt support
 - `LlamaTranslationEngine` connected to the Translate button
 - inference runs off the UI thread
-- deterministic translation decoding
-- safe fallback for GGUF files without a supported chat template
 - no server/API translation fallback
 - no Android `INTERNET` permission
-- debug APK successfully built in GitHub Actions with Kotlin + NDK + CMake + llama.cpp
+- Camera stage 1: live CameraX preview, photo capture and gallery image selection
 
-Camera, dialog and voice input are intentionally left for later phases.
+Camera OCR/translation and Dialog mode are the next implementation phases.
 
 ## Local model
 
 The model is not committed to Git and is not bundled into the APK.
-
-For the first MVP:
 
 1. copy a compatible `.gguf` model to the Android device;
 2. open **Настройки → Локальная модель**;
@@ -67,9 +68,9 @@ For the first MVP:
 4. select the file;
 5. Ling copies it into app-private storage and loads it through llama.cpp.
 
-Initial physical-device test target: **Qwen3-0.6B GGUF Q4_K_M**.
+Current recommended translation model: **TranslateGemma 4B GGUF Q4_K_M**. Qwen GGUF models remain supported as alternatives.
 
-The first native build is CPU-only and `arm64-v8a`. GPU acceleration can be evaluated after the baseline translator is stable.
+The native build is CPU-only and `arm64-v8a`. GPU acceleration can be evaluated after the baseline translator is stable.
 
 ## Architecture
 
@@ -89,6 +90,7 @@ llama.cpp (Android NDK / CMake)
 GGUF model in app-private storage
 
 Settings
+  ├─ Translation defaults
   ├─ Local model
   └─ History
        ↓
@@ -113,10 +115,8 @@ git submodule update --init --recursive
 
 ## Build
 
-The project currently builds for `arm64-v8a` using Java 17, stable Android API 36, Android NDK and CMake. GitHub Actions runs a debug APK build on pushes to `main` and checks out the llama.cpp submodule recursively.
-
-The remaining phase-1 validation is a physical Android test with a real GGUF model: load the model, run all six language directions, and measure speed/RAM/stability.
+The project builds for `arm64-v8a` using Java 17, stable Android API 36, Android NDK and CMake. GitHub Actions runs a debug APK build on pushes to `main` and checks out the llama.cpp submodule recursively.
 
 ## Privacy / offline principle
 
-The Android manifest does not request Internet access. Translation, model loading and history all work locally on the device. Future speech/OCR functionality is also intended to remain offline.
+The Android manifest does not request Internet access. Translation, model loading, history, speech input/TTS and planned OCR are designed to work locally on the device.
