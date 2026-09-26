@@ -56,7 +56,7 @@ Implemented and CI-build verified:
 - no server/API translation fallback
 - no Android `INTERNET` permission
 - Camera stage 1: full-screen CameraX preview, runtime camera permission, photo capture, gallery image selection, rear-camera torch control and language flags
-- Camera OCR stage B1: bundled offline Tesseract OCR for Russian / English / Simplified Chinese using `tessdata_best`, automatic OCR after capture/gallery selection, colour/grayscale/binary/inverted passes, text-line plus word-level recognition, multilingual precision passes, deduplication, barcode/noise filtering, overlap cleanup and paragraph-aware grouping into overlay-ready blocks
+- Camera OCR stage B1: hybrid fully offline OCR — Tesseract `tessdata_best` for Russian/mixed Cyrillic text plus bundled ML Kit Latin/Chinese recognition, automatic OCR after capture/gallery selection, colour/grayscale/binary/inverted passes, text-line plus word-level recognition, multilingual precision passes, deduplication, barcode/noise filtering, overlap cleanup and paragraph-aware grouping into overlay-ready blocks
 
 Image translation overlays and Dialog mode are the next implementation phases.
 
@@ -93,7 +93,7 @@ GGUF model in app-private storage
 
 Camera image
   ↓
-Tesseract OCR (offline)
+Tesseract + bundled ML Kit OCR (offline)
   ↓
 recognized text lines + grouped bounding rectangles
   ↓
@@ -126,7 +126,7 @@ git submodule update --init --recursive
 
 ## Build
 
-The project builds for `arm64-v8a` using Java 17, stable Android API 36, Android NDK and CMake. GitHub Actions runs a debug APK build on pushes to `main`, checks out the llama.cpp submodule recursively, and bundles pinned `tessdata_best` language files for offline OCR.
+The project builds for `arm64-v8a` using Java 17, stable Android API 36, Android NDK and CMake. GitHub Actions runs a debug APK build on pushes to `main`, checks out the llama.cpp submodule recursively, and bundles pinned `tessdata_best` language files plus bundled ML Kit OCR models for fully offline camera recognition.
 
 ## Privacy / offline principle
 
