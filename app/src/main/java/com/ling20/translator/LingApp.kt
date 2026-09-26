@@ -107,6 +107,7 @@ private const val TTS_SOURCE = "source"
 private const val TTS_RESULT = "result"
 private const val TRANSLATION_PREFS = "ling_translation_settings"
 private const val PREF_DEFAULT_SOURCE = "default_source_language"
+private const val PREF_DEFAULT_TARGET = "default_target_language"
 
 @Composable
 fun LingApp(
@@ -127,6 +128,14 @@ fun LingApp(
         runCatching { SourceLanguageOption.valueOf(saved ?: SourceLanguageOption.RUSSIAN.name) }
             .getOrDefault(SourceLanguageOption.RUSSIAN)
     }
+    val initialDefaultTarget = remember(translationPreferences) {
+        val saved = translationPreferences.getString(
+            PREF_DEFAULT_TARGET,
+            Language.ENGLISH.name,
+        )
+        runCatching { Language.valueOf(saved ?: Language.ENGLISH.name) }
+            .getOrDefault(Language.ENGLISH)
+    }
 
     var section by rememberSaveable { mutableStateOf(AppSection.TRANSLATE) }
     var settingsPage by rememberSaveable { mutableStateOf(SettingsPage.ROOT) }
@@ -136,9 +145,18 @@ fun LingApp(
     var modelLoading by remember { mutableStateOf(true) }
     var modelError by remember { mutableStateOf<String?>(null) }
     var defaultSourceName by remember { mutableStateOf(initialDefaultSource.name) }
+    var defaultTargetName by remember { mutableStateOf(initialDefaultTarget.name) }
 
-    var sourceOptionName by rememberSaveable { mutableStateOf(initialDefaultSource.name) }
-    var targetName by rememberSaveable { mutableStateOf(Language.ENGLISH.name) }
+    var sourceOptionName by rememberSaveable {
+        mutableStateOf(
+            if (initialDefaultSource.language == initialDefaultTarget) {
+                SourceLanguageOption.AUTO.name
+            } else {
+                initialDefaultSource.name
+            },
+        )
+    }
+    var targetName by rememberSaveable { mutableStateOf(initialDefaultTarget.name) }
     var input by rememberSaveable { mutableStateOf("") }
     var output by rememberSaveable { mutableStateOf("") }
     var translating by remember { mutableStateOf(false) }
@@ -147,6 +165,8 @@ fun LingApp(
     val target = Language.valueOf(targetName)
     val defaultSource = runCatching { SourceLanguageOption.valueOf(defaultSourceName) }
         .getOrDefault(SourceLanguageOption.RUSSIAN)
+    val defaultTarget = runCatching { Language.valueOf(defaultTargetName) }
+        .getOrDefault(Language.ENGLISH)
 
     fun syncEngine() {
         engineReady = engine.isReady
@@ -293,6 +313,7 @@ fun LingApp(
 
                     SettingsPage.TRANSLATION -> TranslationSettings(
                         defaultSource = defaultSource,
+                        defaultTarget = defaultTarget,
                         onBack = { settingsPage = SettingsPage.ROOT },
                         onDefaultSourceChanged = { selected ->
                             defaultSourceName = selected.name
@@ -300,7 +321,23 @@ fun LingApp(
                                 .putString(PREF_DEFAULT_SOURCE, selected.name)
                                 .apply()
                             if (input.isBlank() && output.isBlank()) {
-                                sourceOptionName = selected.name
+                                sourceOptionName = if (selected.language == target) {
+                                    SourceLanguageOption.AUTO.name
+                                } else {
+                                    selected.name
+                                }
+                            }
+                        },
+                        onDefaultTargetChanged = { selected ->
+                            defaultTargetName = selected.name
+                            translationPreferences.edit()
+                                .putString(PREF_DEFAULT_TARGET, selected.name)
+                                .apply()
+                            if (input.isBlank() && output.isBlank()) {
+                                targetName = selected.name
+                                if (sourceOption.language == selected) {
+                                    sourceOptionName = SourceLanguageOption.AUTO.name
+                                }
                             }
                         },
                     )
@@ -996,8 +1033,10 @@ private fun SettingsRoot(
 @Composable
 private fun TranslationSettings(
     defaultSource: SourceLanguageOption,
+    defaultTarget: Language,
     onBack: () -> Unit,
     onDefaultSourceChanged: (SourceLanguageOption) -> Unit,
+    onDefaultTargetChanged: (Language) -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -1039,6 +1078,34 @@ private fun TranslationSettings(
                 )
                 Text(
                     "Доступны: Автоопределение, Русский, English и 中文. Выбранный язык используется при следующем запуске приложения.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    "Язык вывода по умолчанию",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                LanguagePicker(
+                    language = defaultTarget,
+                    enabled = true,
+                    onSelected = onDefaultTargetChanged,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "Доступны: Русский, English и 中文. Выбранный язык используется как язык результата при следующем запуске приложения.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
