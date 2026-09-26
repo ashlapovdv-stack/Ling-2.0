@@ -11,6 +11,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -28,7 +29,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CameraAlt
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
@@ -82,10 +82,6 @@ private enum class SettingsPage { ROOT, MODEL, HISTORY }
 
 private val ScreenBackground = Color(0xFFF5F8FC)
 private val CardBorder = Color(0xFFE3E8EF)
-private val SuccessBackground = Color(0xFFE7F7ED)
-private val SuccessForeground = Color(0xFF1F8B54)
-private val WaitingBackground = Color(0xFFFFF5DF)
-private val WaitingForeground = Color(0xFFAD7218)
 private val ResultBackground = Color(0xFFEAF2FF)
 
 @Composable
@@ -94,6 +90,8 @@ fun LingApp(
     modelRepository: ModelRepository,
     engine: LlamaTranslationEngine,
 ) {
+    val appScope = rememberCoroutineScope()
+
     var section by rememberSaveable { mutableStateOf(AppSection.TRANSLATE) }
     var settingsPage by rememberSaveable { mutableStateOf(SettingsPage.ROOT) }
     var history by remember { mutableStateOf(historyRepository.load()) }
@@ -101,6 +99,17 @@ fun LingApp(
     var modelName by remember { mutableStateOf(engine.loadedModelName) }
     var modelLoading by remember { mutableStateOf(true) }
     var modelError by remember { mutableStateOf<String?>(null) }
+
+    // Translation state intentionally lives at the app level so switching tabs
+    // does not recreate/clear the translator form.
+    var sourceName by rememberSaveable { mutableStateOf(Language.RUSSIAN.name) }
+    var targetName by rememberSaveable { mutableStateOf(Language.ENGLISH.name) }
+    var input by rememberSaveable { mutableStateOf("") }
+    var output by rememberSaveable { mutableStateOf("") }
+    var translating by remember { mutableStateOf(false) }
+
+    val source = Language.valueOf(sourceName)
+    val target = Language.valueOf(targetName)
 
     fun syncEngine() {
         engineReady = engine.isReady
@@ -130,13 +139,71 @@ fun LingApp(
         Box(Modifier.fillMaxSize().padding(padding)) {
             when (section) {
                 AppSection.TRANSLATE -> TranslatorScreen(
-                    engine = engine,
-                    engineReady = engineReady,
+                    source = source,
+                    target = target,
+                    input = input,
+                    output = output,
+                    translating = translating,
                     modelLoading = modelLoading,
-                    onSaved = { source, target, input, output ->
-                        historyRepository.add(source, target, input, output)
-                        history = historyRepository.load()
+                    onSourceSelected = { chosen ->
+                        sourceName = chosen.name
+                        if (chosen == target) {
+                            targetName = Language.entries.first { it != chosen }.name
+                        }
                     },
+                    onTargetSelected = { chosen ->
+                        targetName = chosen.name
+                        if (chosen == source) {
+                            sourceName = Language.entries.first { it != chosen }.name
+                        }
+                    },
+                    onSwap = {
+                        val oldSource = sourceName
+                        sourceName = targetName
+                        targetName = oldSource
+                        if (output.isNotBlank() && engineReady) {
+                            val oldInput = input
+                            input = output
+                            output = oldInput
+                        }
+                    },
+                    onInputChanged = { value ->
+                        if (value.length <= 5000 && !translating) input = value
+                    },
+                    onTranslate = {
+                        val clean = input.trim()
+                        if (!engineReady) {
+                            output = "Откройте Настройки → Локальная модель и выберите GGUF-файл."
+                        } else if (clean.isNotEmpty() && !translating) {
+                            translating = true
+                            output = ""
+                            val translateSource = source
+                            val translateTarget = target
+                            appScope.launch {
+                                val result = withContext(Dispatchers.Default) {
+                                    runCatching {
+                                        engine.translate(clean, translateSource, translateTarget)
+                                    }
+                                }
+                                result.onSuccess { translated ->
+                                    output = translated
+                                    if (translated.isNotBlank()) {
+                                        historyRepository.add(
+                                            translateSource,
+                                            translateTarget,
+                                            clean,
+                                            translated,
+                                        )
+                                        history = historyRepository.load()
+                                    }
+                                }.onFailure { error ->
+                                    output = "Ошибка перевода: ${error.message ?: "неизвестная ошибка"}"
+                                }
+                                translating = false
+                            }
+                        }
+                    },
+                    onClearResult = { output = "" },
                 )
 
                 AppSection.CAMERA -> ComingSoon(
@@ -189,89 +256,47 @@ fun LingApp(
 
 @Composable
 private fun TranslatorScreen(
-    engine: TranslationEngine,
-    engineReady: Boolean,
+    source: Language,
+    target: Language,
+    input: String,
+    output: String,
+    translating: Boolean,
     modelLoading: Boolean,
-    onSaved: (Language, Language, String, String) -> Unit,
+    onSourceSelected: (Language) -> Unit,
+    onTargetSelected: (Language) -> Unit,
+    onSwap: () -> Unit,
+    onInputChanged: (String) -> Unit,
+    onTranslate: () -> Unit,
+    onClearResult: () -> Unit,
 ) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var sourceName by rememberSaveable { mutableStateOf(Language.RUSSIAN.name) }
-    var targetName by rememberSaveable { mutableStateOf(Language.ENGLISH.name) }
-    var input by rememberSaveable { mutableStateOf("") }
-    var output by rememberSaveable { mutableStateOf("") }
-    var translating by remember { mutableStateOf(false) }
-
-    val source = Language.valueOf(sourceName)
-    val target = Language.valueOf(targetName)
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 18.dp, vertical = 18.dp),
+            .padding(horizontal = 18.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        TranslatorHeader(engineReady = engineReady, modelLoading = modelLoading)
-
+        // No title/model status header here: translator starts immediately
+        // with language controls to maximize space for input and result.
         LanguageRow(
             source = source,
             target = target,
             enabled = !translating,
-            onSourceSelected = { chosen ->
-                sourceName = chosen.name
-                if (chosen == target) {
-                    targetName = Language.entries.first { it != chosen }.name
-                }
-            },
-            onTargetSelected = { chosen ->
-                targetName = chosen.name
-                if (chosen == source) {
-                    sourceName = Language.entries.first { it != chosen }.name
-                }
-            },
-            onSwap = {
-                val oldSource = sourceName
-                sourceName = targetName
-                targetName = oldSource
-                if (output.isNotBlank() && engineReady) {
-                    val oldInput = input
-                    input = output
-                    output = oldInput
-                }
-            },
+            onSourceSelected = onSourceSelected,
+            onTargetSelected = onTargetSelected,
+            onSwap = onSwap,
         )
 
         InputCard(
             input = input,
             enabled = !translating,
-            onInputChanged = { value ->
-                if (value.length <= 5000 && !translating) input = value
-            },
+            onInputChanged = onInputChanged,
         )
 
         Button(
-            onClick = {
-                val clean = input.trim()
-                if (!engineReady) {
-                    output = "Откройте Настройки → Локальная модель и выберите GGUF-файл."
-                } else {
-                    translating = true
-                    output = ""
-                    scope.launch {
-                        val result = withContext(Dispatchers.Default) {
-                            runCatching { engine.translate(clean, source, target) }
-                        }
-                        result.onSuccess { translated ->
-                            output = translated
-                            if (translated.isNotBlank()) onSaved(source, target, clean, translated)
-                        }.onFailure { error ->
-                            output = "Ошибка перевода: ${error.message ?: "неизвестная ошибка"}"
-                        }
-                        translating = false
-                    }
-                }
-            },
+            onClick = onTranslate,
             enabled = input.isNotBlank() && source != target && !translating && !modelLoading,
             modifier = Modifier.fillMaxWidth().height(58.dp),
             shape = RoundedCornerShape(18.dp),
@@ -306,90 +331,13 @@ private fun TranslatorScreen(
                     clipboard.setPrimaryClip(ClipData.newPlainText("Ling translation", output))
                     Toast.makeText(context, "Перевод скопирован", Toast.LENGTH_SHORT).show()
                 },
-                onClear = { output = "" },
+                onClear = onClearResult,
             )
         } else {
             EmptyResultHint(target)
         }
 
-        Spacer(Modifier.height(6.dp))
-    }
-}
-
-@Composable
-private fun TranslatorHeader(engineReady: Boolean, modelLoading: Boolean) {
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                "Ling 2.0",
-                style = MaterialTheme.typography.headlineLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Spacer(Modifier.weight(1f))
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = Color(0xFFE5EEFC),
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp),
-                ) {
-                    Text(
-                        "AI",
-                        color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.Bold,
-                        style = MaterialTheme.typography.labelMedium,
-                    )
-                    Text(
-                        "Локальная модель",
-                        color = Color(0xFF354052),
-                        style = MaterialTheme.typography.labelMedium,
-                    )
-                }
-            }
-        }
-
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
-            color = if (engineReady) SuccessBackground else WaitingBackground,
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                if (modelLoading) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(19.dp),
-                        strokeWidth = 2.dp,
-                        color = WaitingForeground,
-                    )
-                } else {
-                    Icon(
-                        Icons.Default.CheckCircle,
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp),
-                        tint = if (engineReady) SuccessForeground else WaitingForeground,
-                    )
-                }
-                Text(
-                    text = when {
-                        modelLoading -> "Загружаю локальную модель…"
-                        engineReady -> "Офлайн · модель загружена"
-                        else -> "Офлайн · выберите модель в настройках"
-                    },
-                    modifier = Modifier.padding(start = 9.dp),
-                    color = if (engineReady) SuccessForeground else WaitingForeground,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
-        }
+        Spacer(Modifier.height(4.dp))
     }
 }
 
@@ -635,25 +583,50 @@ private fun TranslationResultCard(
                 color = MaterialTheme.colorScheme.onSurface,
             )
 
-            Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                OutlinedButton(
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ResultActionButton(
+                    text = "Копировать",
+                    icon = Icons.Default.ContentCopy,
                     onClick = onCopy,
-                    shape = RoundedCornerShape(14.dp),
-                    border = BorderStroke(1.dp, Color(0xFFC8D9F5)),
-                ) {
-                    Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Text("  Копировать")
-                }
-                OutlinedButton(
+                    modifier = Modifier.weight(1f),
+                )
+                ResultActionButton(
+                    text = "Очистить",
+                    icon = Icons.Default.Delete,
                     onClick = onClear,
-                    shape = RoundedCornerShape(14.dp),
-                    border = BorderStroke(1.dp, Color(0xFFC8D9F5)),
-                ) {
-                    Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Text("  Очистить")
-                }
+                    modifier = Modifier.weight(1f),
+                )
             }
         }
+    }
+}
+
+@Composable
+private fun ResultActionButton(
+    text: String,
+    icon: ImageVector,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    OutlinedButton(
+        onClick = onClick,
+        modifier = modifier.height(48.dp),
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, Color(0xFFC8D9F5)),
+        contentPadding = PaddingValues(horizontal = 8.dp),
+    ) {
+        Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
+        Text(
+            text = text,
+            modifier = Modifier.padding(start = 7.dp),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            style = MaterialTheme.typography.labelLarge,
+        )
     }
 }
 
@@ -805,7 +778,11 @@ private fun ModelSettings(
         }
 
         installed?.let { model ->
-            Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+            ) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(model.displayName, fontWeight = FontWeight.SemiBold)
                     Text(formatBytes(model.sizeBytes), color = MaterialTheme.colorScheme.onSurfaceVariant)
