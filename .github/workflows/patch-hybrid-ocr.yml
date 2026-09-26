@@ -1,0 +1,27 @@
+name: Patch hybrid OCR
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/patch_hybrid_ocr.py'
+      - '.github/workflows/patch-hybrid-ocr.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply hybrid OCR patch
+        run: python .github/patch_hybrid_ocr.py
+      - name: Commit hybrid OCR
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm .github/patch_hybrid_ocr.py .github/workflows/patch-hybrid-ocr.yml
+          git add -A
+          git commit -m "Add hybrid camera OCR"
+          git push
