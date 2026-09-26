@@ -98,7 +98,8 @@ internal object CameraOcrEngine {
         // Keep the common path deliberately small. ML Kit handles Latin (and
         // Chinese in AUTO/Chinese), while Tesseract concentrates on Cyrillic and
         // mixed Russian/English text. Expensive precision passes are only used
-        // when the first result is genuinely weak.
+        // when the first result is genuinely weak or a compact region contains
+        // a lot of genuinely small text.
         val primaryLanguage = sourceLanguage.toTessLanguageSpec()
         val dataPath = prepareTessData(context, setOf("rus", "eng", "chi_sim"))
         val preparedImages = prepareImages(original)
@@ -120,7 +121,8 @@ internal object CameraOcrEngine {
             )
 
             val firstPass = deduplicateLines(rawLines)
-            if (isWeakResult(firstPass)) {
+            val ranFullPrecision = isWeakResult(firstPass)
+            if (ranFullPrecision) {
                 val precisionLanguage = when (sourceLanguage) {
                     Language.RUSSIAN -> "rus"
                     Language.ENGLISH -> "eng"
@@ -135,16 +137,40 @@ internal object CameraOcrEngine {
                     originalHeight = original.height,
                     fullPassSet = true,
                 )
+            } else {
+                val denseRegion = findDenseSmallTextRegion(
+                    lines = firstPass,
+                    imageWidth = original.width,
+                    imageHeight = original.height,
+                )
+                if (denseRegion != null) {
+                    rawLines += recognizeDenseSmallTextRegion(
+                        dataPath = dataPath,
+                        languageSpec = densePrecisionLanguageSpec(sourceLanguage, firstPass),
+                        original = original,
+                        region = denseRegion,
+                    )
+                }
             }
 
             val deduplicated = deduplicateLines(rawLines)
-            val wordCandidates = deduplicated
-                .filter { it.level == OcrLevel.WORD }
-                .filterNot { looksLikeBarcode(it.text) }
-                .filterNot { looksLikeWordNoise(it) }
-            val baseLineCandidates = deduplicated
-                .filter { it.level == OcrLevel.LINE }
-                .filterNot { looksLikeBarcode(it.text) }
+            val wordCandidates = filterSpatialNoise(
+                items = deduplicated
+                    .filter { it.level == OcrLevel.WORD }
+                    .filterNot { looksLikeBarcode(it.text) }
+                    .filterNot { looksLikeWordNoise(it) },
+                imageWidth = original.width,
+                imageHeight = original.height,
+                strongCharacterCount = SPATIAL_STRONG_WORD_CHARS,
+            )
+            val baseLineCandidates = filterSpatialNoise(
+                items = deduplicated
+                    .filter { it.level == OcrLevel.LINE }
+                    .filterNot { looksLikeBarcode(it.text) },
+                imageWidth = original.width,
+                imageHeight = original.height,
+                strongCharacterCount = SPATIAL_STRONG_LINE_CHARS,
+            )
             val lineCandidates = rebuildLinesFromWords(
                 words = wordCandidates,
                 fallbackLines = baseLineCandidates,
@@ -313,6 +339,143 @@ internal object CameraOcrEngine {
         }
     }
 
+    private fun recognizeDenseSmallTextRegion(
+        dataPath: File,
+        languageSpec: String,
+        original: Bitmap,
+        region: Rect,
+    ): List<RawOcrLine> {
+        if (region.width() <= 0 || region.height() <= 0) return emptyList()
+
+        val crop = Bitmap.createBitmap(
+            original,
+            region.left,
+            region.top,
+            region.width(),
+            region.height(),
+        )
+        val prepared = prepareImages(crop, minimumScale = DENSE_PRECISION_MIN_SCALE)
+        return try {
+            recognizeWithLanguage(
+                dataPath = dataPath,
+                languageSpec = languageSpec,
+                preparedImages = prepared,
+                originalWidth = crop.width,
+                originalHeight = crop.height,
+                fullPassSet = false,
+            ).map { item ->
+                item.copy(
+                    rect = Rect(item.rect).apply {
+                        offset(region.left, region.top)
+                    },
+                )
+            }
+        } finally {
+            prepared
+                .map { it.bitmap }
+                .distinctBy { System.identityHashCode(it) }
+                .forEach { bitmap ->
+                    if (bitmap !== crop && !bitmap.isRecycled) bitmap.recycle()
+                }
+            if (!crop.isRecycled) crop.recycle()
+        }
+    }
+
+    private data class MutableDenseRegion(
+        val words: MutableList<RawOcrLine>,
+        var rect: Rect,
+    )
+
+    private fun findDenseSmallTextRegion(
+        lines: List<RawOcrLine>,
+        imageWidth: Int,
+        imageHeight: Int,
+    ): Rect? {
+        if (imageWidth <= 0 || imageHeight <= 0) return null
+
+        val maxSmallHeight = max(
+            MIN_BOX_PIXELS * 2,
+            (imageHeight * DENSE_SMALL_WORD_MAX_HEIGHT_FRACTION).roundToInt(),
+        )
+        val candidates = lines
+            .filter { it.level == OcrLevel.WORD }
+            .filter { it.rect.height() in MIN_BOX_PIXELS..maxSmallHeight }
+            .filter { it.text.count(Char::isLetterOrDigit) >= 2 }
+            .filterNot { looksLikeBarcode(it.text) }
+        if (candidates.size < DENSE_MIN_WORDS) return null
+
+        val horizontalAllowance = max(
+            MIN_BOX_PIXELS * 4,
+            (imageWidth * DENSE_CLUSTER_H_GAP_FRACTION).roundToInt(),
+        )
+        val verticalAllowance = max(
+            MIN_BOX_PIXELS * 3,
+            (imageHeight * DENSE_CLUSTER_V_GAP_FRACTION).roundToInt(),
+        )
+        val clusters = mutableListOf<MutableDenseRegion>()
+
+        candidates
+            .sortedWith(compareBy<RawOcrLine> { it.rect.top }.thenBy { it.rect.left })
+            .forEach { word ->
+                val cluster = clusters
+                    .asSequence()
+                    .filter { current ->
+                        horizontalGap(current.rect, word.rect) <= horizontalAllowance &&
+                            verticalGap(current.rect, word.rect) <= verticalAllowance
+                    }
+                    .minByOrNull { current -> centerDistance(current.rect, word.rect) }
+
+                if (cluster == null) {
+                    clusters += MutableDenseRegion(mutableListOf(word), Rect(word.rect))
+                } else {
+                    cluster.words += word
+                    cluster.rect.union(word.rect)
+                }
+            }
+
+        val best = clusters
+            .filter { it.words.size >= DENSE_MIN_WORDS }
+            .maxByOrNull { cluster ->
+                cluster.words.sumOf { it.text.count(Char::isLetterOrDigit) } + cluster.words.size * 2
+            } ?: return null
+
+        val imageArea = imageWidth.toDouble() * imageHeight.toDouble()
+        val regionArea = best.rect.width().toDouble() * best.rect.height().toDouble()
+        val areaFraction = if (imageArea > 0.0) regionArea / imageArea else 0.0
+        if (areaFraction < DENSE_MIN_AREA_FRACTION || areaFraction > DENSE_MAX_AREA_FRACTION) {
+            return null
+        }
+
+        val padX = max(
+            MIN_BOX_PIXELS * 4,
+            (imageWidth * DENSE_REGION_H_PADDING_FRACTION).roundToInt(),
+        )
+        val padY = max(
+            MIN_BOX_PIXELS * 4,
+            (imageHeight * DENSE_REGION_V_PADDING_FRACTION).roundToInt(),
+        )
+        return Rect(
+            (best.rect.left - padX).coerceAtLeast(0),
+            (best.rect.top - padY).coerceAtLeast(0),
+            (best.rect.right + padX).coerceAtMost(imageWidth),
+            (best.rect.bottom + padY).coerceAtMost(imageHeight),
+        ).takeIf { it.width() >= MIN_DENSE_REGION_PIXELS && it.height() >= MIN_DENSE_REGION_PIXELS }
+    }
+
+    private fun densePrecisionLanguageSpec(
+        sourceLanguage: Language?,
+        firstPass: List<RawOcrLine>,
+    ): String = when (sourceLanguage) {
+        Language.RUSSIAN -> "rus+eng"
+        Language.ENGLISH -> "eng+rus"
+        Language.CHINESE -> "chi_sim+eng"
+        null -> when (detectDominantLanguage(firstPass)) {
+            "chi_sim" -> "chi_sim+eng"
+            "eng" -> "eng+rus"
+            else -> "rus+eng"
+        }
+    }
+
     private fun extractLines(
         tess: TessBaseAPI,
         imageScale: Float,
@@ -390,13 +553,22 @@ internal object CameraOcrEngine {
         return result
     }
 
-    private fun prepareImages(original: Bitmap): List<PreparedImage> {
+    private fun prepareImages(
+        original: Bitmap,
+        minimumScale: Float = 1f,
+    ): List<PreparedImage> {
         val longest = max(original.width, original.height).coerceAtLeast(1)
-        val requestedScale = when {
+        val baseScale = when {
             longest < 1400 -> 2.0f
             longest < 1900 -> 1.45f
             longest > 3000 -> 3000f / longest
             else -> 1f
+        }
+        val requestedScale = if (minimumScale > 1f) {
+            val cappedMinimum = min(minimumScale, DENSE_PRECISION_MAX_LONGEST / longest.toFloat())
+            max(baseScale, cappedMinimum)
+        } else {
+            baseScale
         }
         val width = max(1, (original.width * requestedScale).roundToInt())
         val height = max(1, (original.height * requestedScale).roundToInt())
@@ -568,6 +740,52 @@ internal object CameraOcrEngine {
         }
     }
 
+    private fun filterSpatialNoise(
+        items: List<RawOcrLine>,
+        imageWidth: Int,
+        imageHeight: Int,
+        strongCharacterCount: Int,
+    ): List<RawOcrLine> {
+        if (items.size < 3 || imageWidth <= 0 || imageHeight <= 0) return items
+
+        val edgeX = (imageWidth * SPATIAL_EDGE_FRACTION).roundToInt()
+        val edgeY = (imageHeight * SPATIAL_EDGE_FRACTION).roundToInt()
+        return items.filter { item ->
+            val characters = item.text.count(Char::isLetterOrDigit)
+            if (
+                characters >= strongCharacterCount ||
+                item.confidence >= SPATIAL_STRONG_CONFIDENCE
+            ) {
+                return@filter true
+            }
+
+            val hasNeighbor = items.any { other ->
+                other !== item && isNearbyTextNeighbor(item.rect, other.rect)
+            }
+            if (hasNeighbor) return@filter true
+
+            val nearEdge = item.rect.left <= edgeX ||
+                item.rect.right >= imageWidth - edgeX ||
+                item.rect.top <= edgeY ||
+                item.rect.bottom >= imageHeight - edgeY
+
+            !nearEdge &&
+                characters >= MIN_ALPHANUMERIC_CHARS &&
+                item.confidence >= SPATIAL_ISOLATED_MIN_CONFIDENCE
+        }
+    }
+
+    private fun isNearbyTextNeighbor(a: Rect, b: Rect): Boolean {
+        val typicalHeight = max(a.height(), b.height()).coerceAtLeast(1)
+        val horizontalClose = horizontalGap(a, b) <=
+            typicalHeight * SPATIAL_NEIGHBOR_H_GAP_FACTOR
+        val verticalClose = verticalGap(a, b) <=
+            typicalHeight * SPATIAL_NEIGHBOR_V_GAP_FACTOR ||
+            abs(rectCenterY(a) - rectCenterY(b)) <=
+            typicalHeight * SPATIAL_NEIGHBOR_CENTER_Y_FACTOR
+        return horizontalClose && verticalClose
+    }
+
     private data class MutableWordRow(
         val words: MutableList<RawOcrLine>,
         var rect: Rect,
@@ -578,7 +796,12 @@ internal object CameraOcrEngine {
         fallbackLines: List<RawOcrLine>,
         imageWidth: Int,
     ): List<RawOcrLine> {
-        if (words.isEmpty()) return deduplicatePhysicalLines(fallbackLines)
+        if (words.isEmpty()) {
+            return mergeBaselineLineFragments(
+                deduplicatePhysicalLines(fallbackLines),
+                imageWidth,
+            )
+        }
 
         val rows = mutableListOf<MutableWordRow>()
         words
@@ -591,7 +814,7 @@ internal object CameraOcrEngine {
                     .asSequence()
                     .filter { candidate -> canJoinWordRow(candidate, word, imageWidth) }
                     .minByOrNull { candidate ->
-                        abs(rectCenterY(candidate.rect) - rectCenterY(word.rect))
+                        abs(rowBaseline(candidate) - rectBaseline(word.rect))
                     }
 
                 if (row == null) {
@@ -632,14 +855,17 @@ internal object CameraOcrEngine {
         }
 
         // Raw OCR line boxes are now only a safety net. Keep one only when no
-        // word-derived line already represents the same physical text row.
+        // word-derived line already represents the same physical text row or an
+        // immediately adjacent continuation of that row.
         val fallbacks = fallbackLines.filter { fallback ->
             !looksLikeBarcode(fallback.text) && rebuilt.none { rebuiltLine ->
-                samePhysicalLine(rebuiltLine.rect, fallback.rect)
+                samePhysicalLine(rebuiltLine.rect, fallback.rect) ||
+                    canMergeLineFragments(rebuiltLine, fallback, imageWidth)
             }
         }
 
-        return deduplicatePhysicalLines(rebuilt + fallbacks)
+        val deduplicated = deduplicatePhysicalLines(rebuilt + fallbacks)
+        return mergeBaselineLineFragments(deduplicated, imageWidth)
             .sortedWith(compareBy<RawOcrLine> { it.rect.top }.thenBy { it.rect.left })
     }
 
@@ -648,10 +874,10 @@ internal object CameraOcrEngine {
         word: RawOcrLine,
         imageWidth: Int,
     ): Boolean {
-        val rowHeight = row.rect.height().coerceAtLeast(1)
+        val typicalHeight = rowTypicalHeight(row).coerceAtLeast(1)
         val wordHeight = word.rect.height().coerceAtLeast(1)
-        val heightRatio = max(rowHeight, wordHeight).toFloat() /
-            min(rowHeight, wordHeight).coerceAtLeast(1)
+        val heightRatio = max(typicalHeight, wordHeight).toFloat() /
+            min(typicalHeight, wordHeight).coerceAtLeast(1)
         if (heightRatio > WORD_ROW_MAX_HEIGHT_RATIO) return false
 
         val verticalOverlap = overlapLength(
@@ -659,19 +885,124 @@ internal object CameraOcrEngine {
             row.rect.bottom,
             word.rect.top,
             word.rect.bottom,
-        ).toFloat() / min(rowHeight, wordHeight).coerceAtLeast(1)
+        ).toFloat() / min(typicalHeight, wordHeight).coerceAtLeast(1)
         val centerDelta = abs(rectCenterY(row.rect) - rectCenterY(word.rect))
-        val sameBaseline = centerDelta <= max(rowHeight, wordHeight) * WORD_ROW_CENTER_FACTOR
-        if (verticalOverlap < WORD_ROW_MIN_VERTICAL_OVERLAP && !sameBaseline) return false
+        val centersAligned = centerDelta <=
+            max(typicalHeight, wordHeight) * WORD_ROW_CENTER_FACTOR
+        val baselineDelta = abs(rowBaseline(row) - rectBaseline(word.rect))
+        val baselinesAligned = baselineDelta <=
+            max(typicalHeight, wordHeight) * WORD_ROW_BASELINE_FACTOR
+        if (
+            verticalOverlap < WORD_ROW_MIN_VERTICAL_OVERLAP &&
+            !centersAligned &&
+            !baselinesAligned
+        ) {
+            return false
+        }
 
         val gap = horizontalGap(row.rect, word.rect)
-        val maxGap = max(rowHeight, wordHeight) * WORD_ROW_MAX_GAP_FACTOR
+        val maxGapFactor = if (baselinesAligned) {
+            WORD_ROW_BASELINE_MAX_GAP_FACTOR
+        } else {
+            WORD_ROW_LOOSE_MAX_GAP_FACTOR
+        }
+        val maxGap = max(typicalHeight, wordHeight) * maxGapFactor
         if (gap > maxGap) return false
 
         val prospectiveWidth = max(row.rect.right, word.rect.right) - min(row.rect.left, word.rect.left)
         if (prospectiveWidth > imageWidth * WORD_ROW_MAX_WIDTH_FRACTION) return false
 
         return true
+    }
+
+    private fun rowTypicalHeight(row: MutableWordRow): Int {
+        val heights = row.words.map { it.rect.height().coerceAtLeast(1) }.sorted()
+        return heights[heights.size / 2]
+    }
+
+    private fun rowBaseline(row: MutableWordRow): Float {
+        val baselines = row.words.map { rectBaseline(it.rect) }.sorted()
+        return baselines[baselines.size / 2]
+    }
+
+    private fun mergeBaselineLineFragments(
+        lines: List<RawOcrLine>,
+        imageWidth: Int,
+    ): List<RawOcrLine> {
+        if (lines.size < 2) return lines
+
+        val merged = mutableListOf<RawOcrLine>()
+        lines
+            .sortedWith(
+                compareBy<RawOcrLine> { rectBaseline(it.rect) }
+                    .thenBy { it.rect.left },
+            )
+            .forEach { candidate ->
+                val index = merged.indices
+                    .asSequence()
+                    .filter { canMergeLineFragments(merged[it], candidate, imageWidth) }
+                    .minByOrNull { horizontalGap(merged[it].rect, candidate.rect) }
+
+                if (index == null) {
+                    merged += candidate
+                } else {
+                    merged[index] = mergeLineFragments(merged[index], candidate)
+                }
+            }
+
+        return deduplicatePhysicalLines(merged)
+    }
+
+    private fun canMergeLineFragments(
+        a: RawOcrLine,
+        b: RawOcrLine,
+        imageWidth: Int,
+    ): Boolean {
+        if (a.level != OcrLevel.LINE || b.level != OcrLevel.LINE) return false
+        if (samePhysicalLine(a.rect, b.rect)) return false
+
+        val aHeight = a.rect.height().coerceAtLeast(1)
+        val bHeight = b.rect.height().coerceAtLeast(1)
+        val maxHeight = max(aHeight, bHeight)
+        val minHeight = min(aHeight, bHeight)
+        if (maxHeight.toFloat() / minHeight > LINE_FRAGMENT_MAX_HEIGHT_RATIO) return false
+
+        val baselineDelta = abs(rectBaseline(a.rect) - rectBaseline(b.rect))
+        if (baselineDelta > maxHeight * LINE_FRAGMENT_BASELINE_FACTOR) return false
+
+        val centerDelta = abs(rectCenterY(a.rect) - rectCenterY(b.rect))
+        if (centerDelta > maxHeight * LINE_FRAGMENT_CENTER_FACTOR) return false
+
+        val overlap = overlapLength(a.rect.left, a.rect.right, b.rect.left, b.rect.right)
+        if (overlap > min(a.rect.width(), b.rect.width()) * LINE_FRAGMENT_MAX_OVERLAP) {
+            return false
+        }
+
+        val gap = horizontalGap(a.rect, b.rect)
+        if (gap > maxHeight * LINE_FRAGMENT_MAX_GAP_FACTOR) return false
+
+        val prospectiveWidth = max(a.rect.right, b.rect.right) - min(a.rect.left, b.rect.left)
+        return prospectiveWidth <= imageWidth * LINE_FRAGMENT_MAX_WIDTH_FRACTION
+    }
+
+    private fun mergeLineFragments(a: RawOcrLine, b: RawOcrLine): RawOcrLine {
+        val ordered = listOf(a, b).sortedBy { it.rect.left }
+        val builder = StringBuilder()
+        ordered.forEach { appendOcrToken(builder, it.text) }
+
+        val rect = Rect(a.rect).apply { union(b.rect) }
+        val aChars = a.text.count(Char::isLetterOrDigit).coerceAtLeast(1)
+        val bChars = b.text.count(Char::isLetterOrDigit).coerceAtLeast(1)
+        val confidence = (a.confidence * aChars + b.confidence * bChars) / (aChars + bChars)
+        val bestSource = if (sourceAwareScore(a) >= sourceAwareScore(b)) a.source else b.source
+
+        return RawOcrLine(
+            text = builder.toString().trim(),
+            rect = rect,
+            confidence = confidence,
+            source = bestSource,
+            level = OcrLevel.LINE,
+        )
     }
 
     private fun deduplicatePhysicalLines(lines: List<RawOcrLine>): List<RawOcrLine> {
@@ -704,16 +1035,19 @@ internal object CameraOcrEngine {
 
     private fun samePhysicalLine(a: Rect, b: Rect): Boolean {
         val minHeight = min(a.height(), b.height()).coerceAtLeast(1)
+        val maxHeight = max(a.height(), b.height()).coerceAtLeast(1)
         val verticalOverlap = overlapLength(a.top, a.bottom, b.top, b.bottom).toFloat() / minHeight
-        if (verticalOverlap < PHYSICAL_LINE_MIN_VERTICAL_OVERLAP) return false
+        val baselineDelta = abs(rectBaseline(a) - rectBaseline(b))
+        val baselinesAligned = baselineDelta <= maxHeight * PHYSICAL_LINE_BASELINE_FACTOR
+        if (verticalOverlap < PHYSICAL_LINE_MIN_VERTICAL_OVERLAP && !baselinesAligned) return false
 
         val horizontalOverlap = overlapLength(a.left, a.right, b.left, b.right).toFloat() /
             min(a.width(), b.width()).coerceAtLeast(1)
         val containment = rectContainmentOverlap(a, b)
         val centerDelta = abs(rectCenterY(a) - rectCenterY(b))
-        val centersAligned = centerDelta <= max(a.height(), b.height()) * PHYSICAL_LINE_CENTER_FACTOR
+        val centersAligned = centerDelta <= maxHeight * PHYSICAL_LINE_CENTER_FACTOR
 
-        return centersAligned &&
+        return (centersAligned || baselinesAligned) &&
             (horizontalOverlap >= PHYSICAL_LINE_MIN_HORIZONTAL_OVERLAP ||
                 containment >= PHYSICAL_LINE_MIN_CONTAINMENT)
     }
@@ -741,7 +1075,10 @@ internal object CameraOcrEngine {
 
         val verticalOverlap = overlapLength(line.top, line.bottom, word.top, word.bottom).toFloat() /
             min(line.height(), word.height()).coerceAtLeast(1)
-        if (verticalOverlap < WORD_TO_LINE_VERTICAL_OVERLAP) return false
+        val maxHeight = max(line.height(), word.height()).coerceAtLeast(1)
+        val baselineDelta = abs(rectBaseline(line) - rectBaseline(word))
+        val baselineAligned = baselineDelta <= maxHeight * WORD_TO_LINE_BASELINE_FACTOR
+        if (verticalOverlap < WORD_TO_LINE_VERTICAL_OVERLAP && !baselineAligned) return false
 
         val wordCenterX = (word.left + word.right) / 2f
         val margin = line.height().coerceAtLeast(1) * WORD_TO_LINE_HORIZONTAL_MARGIN
@@ -782,6 +1119,8 @@ internal object CameraOcrEngine {
     }
 
     private fun rectCenterY(rect: Rect): Float = (rect.top + rect.bottom) / 2f
+
+    private fun rectBaseline(rect: Rect): Float = rect.bottom.toFloat()
 
     private fun horizontalGap(a: Rect, b: Rect): Int = when {
         b.left >= a.right -> b.left - a.right
@@ -1201,17 +1540,52 @@ internal object CameraOcrEngine {
     private const val WORD_MIN_CONFIDENCE = 24f
     private const val WORD_INSIDE_LINE_OVERLAP = 0.84f
     private const val WORD_TO_LINE_CONTAINMENT = 0.58f
-    private const val WORD_TO_LINE_VERTICAL_OVERLAP = 0.55f
+    private const val WORD_TO_LINE_VERTICAL_OVERLAP = 0.42f
+    private const val WORD_TO_LINE_BASELINE_FACTOR = 0.38f
     private const val WORD_TO_LINE_HORIZONTAL_MARGIN = 0.65f
-    private const val WORD_ROW_MIN_VERTICAL_OVERLAP = 0.46f
-    private const val WORD_ROW_CENTER_FACTOR = 0.40f
+
+    private const val SPATIAL_STRONG_WORD_CHARS = 4
+    private const val SPATIAL_STRONG_LINE_CHARS = 5
+    private const val SPATIAL_STRONG_CONFIDENCE = 66f
+    private const val SPATIAL_ISOLATED_MIN_CONFIDENCE = 52f
+    private const val SPATIAL_EDGE_FRACTION = 0.025f
+    private const val SPATIAL_NEIGHBOR_H_GAP_FACTOR = 6.0f
+    private const val SPATIAL_NEIGHBOR_V_GAP_FACTOR = 2.0f
+    private const val SPATIAL_NEIGHBOR_CENTER_Y_FACTOR = 3.0f
+
+    private const val DENSE_SMALL_WORD_MAX_HEIGHT_FRACTION = 0.032f
+    private const val DENSE_MIN_WORDS = 9
+    private const val DENSE_CLUSTER_H_GAP_FRACTION = 0.05f
+    private const val DENSE_CLUSTER_V_GAP_FRACTION = 0.025f
+    private const val DENSE_MIN_AREA_FRACTION = 0.008
+    private const val DENSE_MAX_AREA_FRACTION = 0.55
+    private const val DENSE_REGION_H_PADDING_FRACTION = 0.018f
+    private const val DENSE_REGION_V_PADDING_FRACTION = 0.012f
+    private const val DENSE_PRECISION_MIN_SCALE = 1.65f
+    private const val DENSE_PRECISION_MAX_LONGEST = 3200f
+    private const val MIN_DENSE_REGION_PIXELS = 96
+
+    private const val WORD_ROW_MIN_VERTICAL_OVERLAP = 0.34f
+    private const val WORD_ROW_CENTER_FACTOR = 0.46f
+    private const val WORD_ROW_BASELINE_FACTOR = 0.34f
     private const val WORD_ROW_MAX_HEIGHT_RATIO = 1.95f
-    private const val WORD_ROW_MAX_GAP_FACTOR = 2.7f
+    private const val WORD_ROW_BASELINE_MAX_GAP_FACTOR = 5.2f
+    private const val WORD_ROW_LOOSE_MAX_GAP_FACTOR = 2.8f
     private const val WORD_ROW_MAX_WIDTH_FRACTION = 0.92f
-    private const val PHYSICAL_LINE_MIN_VERTICAL_OVERLAP = 0.68f
+
+    private const val PHYSICAL_LINE_MIN_VERTICAL_OVERLAP = 0.52f
     private const val PHYSICAL_LINE_MIN_HORIZONTAL_OVERLAP = 0.44f
     private const val PHYSICAL_LINE_MIN_CONTAINMENT = 0.76f
-    private const val PHYSICAL_LINE_CENTER_FACTOR = 0.34f
+    private const val PHYSICAL_LINE_CENTER_FACTOR = 0.38f
+    private const val PHYSICAL_LINE_BASELINE_FACTOR = 0.30f
+
+    private const val LINE_FRAGMENT_MAX_HEIGHT_RATIO = 1.75f
+    private const val LINE_FRAGMENT_BASELINE_FACTOR = 0.34f
+    private const val LINE_FRAGMENT_CENTER_FACTOR = 0.42f
+    private const val LINE_FRAGMENT_MAX_GAP_FACTOR = 4.8f
+    private const val LINE_FRAGMENT_MAX_OVERLAP = 0.18f
+    private const val LINE_FRAGMENT_MAX_WIDTH_FRACTION = 0.94f
+
     private const val WORD_NOISE_CONFIDENCE = 52f
     private const val FINAL_MIN_CONFIDENCE = 20f
     private const val MIN_ALPHANUMERIC_CHARS = 2
