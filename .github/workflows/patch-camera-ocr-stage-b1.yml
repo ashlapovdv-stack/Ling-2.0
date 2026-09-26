@@ -1,0 +1,30 @@
+name: Patch camera OCR stage B1
+
+on:
+  push:
+    paths:
+      - '.github/workflows/patch-camera-ocr-stage-b1.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply OCR camera patch
+        run: python3 tools/patch_camera_ocr_stage_b1.py
+
+      - name: Commit OCR camera patch
+        shell: bash
+        run: |
+          git config user.name "Ling CI"
+          git config user.email "actions@github.com"
+          git rm .github/workflows/patch-camera-ocr-stage-b1.yml tools/patch_camera_ocr_stage_b1.py
+          git add app/src/main/java/com/ling20/translator/CameraModeScreen.kt
+          git commit -m "Add offline camera OCR block detection"
+          git push
