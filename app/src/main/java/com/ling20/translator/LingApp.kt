@@ -77,7 +77,7 @@ import java.util.Date
 import java.util.Locale
 
 private enum class AppSection { TRANSLATE, CAMERA, DIALOG, SETTINGS }
-private enum class SettingsPage { ROOT, MODEL, HISTORY }
+private enum class SettingsPage { ROOT, TRANSLATION, MODEL, HISTORY }
 
 private enum class SourceLanguageOption(
     val language: Language?,
@@ -105,6 +105,8 @@ private val ModelReadyGreen = Color(0xFF12B76A)
 private val ModelUnavailableGray = Color(0xFFD0D5DD)
 private const val TTS_SOURCE = "source"
 private const val TTS_RESULT = "result"
+private const val TRANSLATION_PREFS = "ling_translation_settings"
+private const val PREF_DEFAULT_SOURCE = "default_source_language"
 
 @Composable
 fun LingApp(
@@ -112,7 +114,19 @@ fun LingApp(
     modelRepository: ModelRepository,
     engine: LlamaTranslationEngine,
 ) {
+    val context = LocalContext.current
     val appScope = rememberCoroutineScope()
+    val translationPreferences = remember(context) {
+        context.applicationContext.getSharedPreferences(TRANSLATION_PREFS, Context.MODE_PRIVATE)
+    }
+    val initialDefaultSource = remember(translationPreferences) {
+        val saved = translationPreferences.getString(
+            PREF_DEFAULT_SOURCE,
+            SourceLanguageOption.RUSSIAN.name,
+        )
+        runCatching { SourceLanguageOption.valueOf(saved ?: SourceLanguageOption.RUSSIAN.name) }
+            .getOrDefault(SourceLanguageOption.RUSSIAN)
+    }
 
     var section by rememberSaveable { mutableStateOf(AppSection.TRANSLATE) }
     var settingsPage by rememberSaveable { mutableStateOf(SettingsPage.ROOT) }
@@ -121,8 +135,9 @@ fun LingApp(
     var modelName by remember { mutableStateOf(engine.loadedModelName) }
     var modelLoading by remember { mutableStateOf(true) }
     var modelError by remember { mutableStateOf<String?>(null) }
+    var defaultSourceName by remember { mutableStateOf(initialDefaultSource.name) }
 
-    var sourceOptionName by rememberSaveable { mutableStateOf(SourceLanguageOption.RUSSIAN.name) }
+    var sourceOptionName by rememberSaveable { mutableStateOf(initialDefaultSource.name) }
     var targetName by rememberSaveable { mutableStateOf(Language.ENGLISH.name) }
     var input by rememberSaveable { mutableStateOf("") }
     var output by rememberSaveable { mutableStateOf("") }
@@ -130,6 +145,8 @@ fun LingApp(
 
     val sourceOption = SourceLanguageOption.valueOf(sourceOptionName)
     val target = Language.valueOf(targetName)
+    val defaultSource = runCatching { SourceLanguageOption.valueOf(defaultSourceName) }
+        .getOrDefault(SourceLanguageOption.RUSSIAN)
 
     fun syncEngine() {
         engineReady = engine.isReady
@@ -268,8 +285,24 @@ fun LingApp(
                         modelName = modelName ?: modelRepository.currentModel()?.displayName,
                         modelError = modelError,
                         historyCount = history.size,
+                        defaultSource = defaultSource,
+                        onTranslation = { settingsPage = SettingsPage.TRANSLATION },
                         onModel = { settingsPage = SettingsPage.MODEL },
                         onHistory = { settingsPage = SettingsPage.HISTORY },
+                    )
+
+                    SettingsPage.TRANSLATION -> TranslationSettings(
+                        defaultSource = defaultSource,
+                        onBack = { settingsPage = SettingsPage.ROOT },
+                        onDefaultSourceChanged = { selected ->
+                            defaultSourceName = selected.name
+                            translationPreferences.edit()
+                                .putString(PREF_DEFAULT_SOURCE, selected.name)
+                                .apply()
+                            if (input.isBlank() && output.isBlank()) {
+                                sourceOptionName = selected.name
+                            }
+                        },
                     )
 
                     SettingsPage.MODEL -> ModelSettings(
@@ -365,8 +398,9 @@ private fun TranslatorScreen(
                 }
             },
             onClear = {
-                if (sourceSpeaking) tts.stop()
+                tts.stop()
                 onClearInput()
+                onClearResult()
             },
         )
 
@@ -673,6 +707,7 @@ private fun InputCard(
                     currentText = input,
                     onTextChanged = onInputChanged,
                 )
+                Spacer(Modifier.weight(1f))
                 IconButton(
                     enabled = enabled && input.isNotBlank(),
                     onClick = onSpeak,
@@ -687,7 +722,6 @@ private fun InputCard(
                         tint = if (speaking) MaterialTheme.colorScheme.primary else Color(0xFF667085),
                     )
                 }
-                Spacer(Modifier.weight(1f))
                 IconButton(
                     enabled = enabled && input.isNotEmpty(),
                     onClick = onCopy,
@@ -703,7 +737,7 @@ private fun InputCard(
                 ) {
                     Icon(
                         Icons.Default.Delete,
-                        contentDescription = "Очистить исходный текст",
+                        contentDescription = "Очистить исходный текст и перевод",
                     )
                 }
             }
@@ -909,6 +943,8 @@ private fun SettingsRoot(
     modelName: String?,
     modelError: String?,
     historyCount: Int,
+    defaultSource: SourceLanguageOption,
+    onTranslation: () -> Unit,
     onModel: () -> Unit,
     onHistory: () -> Unit,
 ) {
@@ -920,6 +956,13 @@ private fun SettingsRoot(
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Text("Настройки", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+
+        SettingsRow(
+            icon = { Icon(Icons.Default.Translate, contentDescription = null) },
+            title = "Перевод",
+            subtitle = "Язык ввода по умолчанию: ${defaultSource.settingsLabel()}",
+            onClick = onTranslation,
+        )
 
         SettingsRow(
             icon = { Icon(Icons.Default.Translate, contentDescription = null) },
@@ -944,10 +987,69 @@ private fun SettingsRoot(
         SettingsRow(
             icon = { Icon(Icons.Default.Settings, contentDescription = null) },
             title = "О приложении",
-            subtitle = "Ling 2.0 · Android · офлайн",
+            subtitle = "Ling 2.0 · v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) · Android · офлайн",
             onClick = null,
         )
     }
+}
+
+@Composable
+private fun TranslationSettings(
+    defaultSource: SourceLanguageOption,
+    onBack: () -> Unit,
+    onDefaultSourceChanged: (SourceLanguageOption) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.Default.ArrowBack, contentDescription = "Назад")
+            }
+            Text(
+                "Перевод",
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    "Язык ввода по умолчанию",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                SourceLanguagePicker(
+                    source = defaultSource,
+                    enabled = true,
+                    onSelected = onDefaultSourceChanged,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "Доступны: Автоопределение, Русский, English и 中文. Выбранный язык используется при следующем запуске приложения.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+private fun SourceLanguageOption.settingsLabel(): String = when (this) {
+    SourceLanguageOption.AUTO -> "Автоопределение"
+    else -> displayName
 }
 
 @Composable
