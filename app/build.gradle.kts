@@ -29,8 +29,8 @@ android {
         applicationId = "com.ling20.translator"
         minSdk = 28
         targetSdk = 36
-        versionCode = 21
-        versionName = "0.1.15.5"
+        versionCode = 22
+        versionName = "0.1.15.6"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -135,6 +135,12 @@ dependencies {
     // Tesseract 5.5.1 wrapper. OCR models are bundled as assets by CI, so
     // recognition remains fully offline at runtime.
     implementation("com.github.adaptech-cz.Tesseract4Android:tesseract4android:4.9.0")
+
+    // Bundled ML Kit models are packaged in the APK and work without network.
+    // Latin complements Tesseract on decorative English headings; Chinese is
+    // enabled for Auto/Chinese camera OCR.
+    implementation("com.google.mlkit:text-recognition:16.0.1")
+    implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

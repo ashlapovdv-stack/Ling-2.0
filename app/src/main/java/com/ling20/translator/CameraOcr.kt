@@ -13,6 +13,12 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.dp
+import com.google.android.gms.tasks.Tasks
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.TextRecognizer
+import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import com.googlecode.tesseract.android.TessBaseAPI
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -64,6 +70,14 @@ internal object CameraOcrEngine {
 
         try {
             val rawLines = mutableListOf<RawOcrLine>()
+
+            // Hybrid OCR: Tesseract remains the primary recognizer for Russian
+            // and mixed Cyrillic labels. Bundled ML Kit contributes stronger
+            // Latin/Chinese detections, especially large decorative headings.
+            rawLines += recognizeWithMlKit(
+                bitmap = original,
+                sourceLanguage = sourceLanguage,
+            )
             rawLines += recognizeWithLanguage(
                 dataPath = dataPath,
                 languageSpec = primaryLanguage,
@@ -118,6 +132,56 @@ internal object CameraOcrEngine {
                     if (bitmap !== original && !bitmap.isRecycled) bitmap.recycle()
                 }
             if (!original.isRecycled) original.recycle()
+        }
+    }
+
+    private fun recognizeWithMlKit(
+        bitmap: Bitmap,
+        sourceLanguage: Language?,
+    ): List<RawOcrLine> {
+        val inputImage = InputImage.fromBitmap(bitmap, 0)
+        val recognizers = mutableListOf<TextRecognizer>()
+
+        // Latin is useful even when Russian is selected because product labels
+        // often contain English brand names and headings.
+        recognizers += TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+        if (sourceLanguage == null || sourceLanguage == Language.CHINESE) {
+            recognizers += TextRecognition.getClient(
+                ChineseTextRecognizerOptions.Builder().build(),
+            )
+        }
+
+        return try {
+            buildList {
+                recognizers.forEach { recognizer ->
+                    val result = runCatching {
+                        Tasks.await(recognizer.process(inputImage))
+                    }.getOrNull() ?: return@forEach
+
+                    result.textBlocks.forEach { block ->
+                        block.lines.forEach { line ->
+                            val rect = line.boundingBox
+                            val value = line.text.trim()
+                            if (
+                                rect != null &&
+                                value.isMeaningfulOcrText() &&
+                                rect.width() >= MIN_BOX_PIXELS &&
+                                rect.height() >= MIN_BOX_PIXELS
+                            ) {
+                                add(
+                                    RawOcrLine(
+                                        text = value,
+                                        rect = Rect(rect),
+                                        confidence = MLKIT_DEFAULT_CONFIDENCE,
+                                    ),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        } finally {
+            recognizers.forEach(TextRecognizer::close)
         }
     }
 
@@ -792,6 +856,7 @@ internal object CameraOcrEngine {
         .lowercase()
         .filter(Char::isLetterOrDigit)
 
+    private const val MLKIT_DEFAULT_CONFIDENCE = 68f
     private const val RAW_MIN_CONFIDENCE = 10f
     private const val WORD_MIN_CONFIDENCE = 24f
     private const val WORD_INSIDE_LINE_OVERLAP = 0.84f
