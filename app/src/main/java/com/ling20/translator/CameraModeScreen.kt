@@ -162,8 +162,8 @@ internal fun CameraModeScreen(
                 )
             }.onSuccess { result ->
                 ocrResult = result
-                if (result.blocks.isEmpty()) {
-                    ocrError = "Текстовые блоки не найдены. Попробуйте приблизить текст или улучшить освещение."
+                if (result.lines.isEmpty() && result.words.isEmpty()) {
+                    ocrError = "Строки и слова не найдены. Попробуйте приблизить текст или улучшить освещение."
                 }
             }.onFailure { error ->
                 ocrError = "Ошибка OCR: ${error.message ?: "неизвестная ошибка"}"
@@ -344,7 +344,7 @@ private fun CameraOcrStatus(
     val message = when {
         running -> "Распознаю текст…"
         error != null -> error
-        result != null -> "OCR: найдено ${result.blocks.size} текстовых блоков"
+        result != null -> "OCR: ${result.lines.size} строк • ${result.words.size} слов"
         else -> return
     }
     Surface(

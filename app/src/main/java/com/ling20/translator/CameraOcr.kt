@@ -34,11 +34,26 @@ data class CameraOcrBlock(
     val confidence: Float,
 )
 
+data class CameraOcrWord(
+    val text: String,
+    val rect: Rect,
+    val confidence: Float,
+)
+
+data class CameraOcrLine(
+    val text: String,
+    val rect: Rect,
+    val confidence: Float,
+    val words: List<CameraOcrWord>,
+)
+
 data class CameraOcrResult(
     val imageWidth: Int,
     val imageHeight: Int,
     val fullText: String,
     val blocks: List<CameraOcrBlock>,
+    val lines: List<CameraOcrLine>,
+    val words: List<CameraOcrWord>,
     val languageSpec: String,
 )
 
@@ -60,11 +75,17 @@ private enum class OcrScript {
     OTHER,
 }
 
+private enum class OcrLevel {
+    LINE,
+    WORD,
+}
+
 private data class RawOcrLine(
     val text: String,
     val rect: Rect,
     val confidence: Float,
     val source: OcrSource,
+    val level: OcrLevel,
 )
 
 internal object CameraOcrEngine {
@@ -117,8 +138,15 @@ internal object CameraOcrEngine {
             }
 
             val deduplicated = deduplicateLines(rawLines)
+            val wordCandidates = deduplicated.filter { it.level == OcrLevel.WORD }
+            val baseLineCandidates = deduplicated.filter { it.level == OcrLevel.LINE }
+            val lineCandidates = addOrphanWordsAsLines(baseLineCandidates, wordCandidates)
+            val words = wordCandidates
+                .sortedWith(compareBy<RawOcrLine> { it.rect.top }.thenBy { it.rect.left })
+                .map { CameraOcrWord(it.text, Rect(it.rect), it.confidence) }
+            val lines = buildStructuredLines(lineCandidates, words)
             val blocks = groupLinesIntoBlocks(
-                lines = deduplicated,
+                lines = lineCandidates,
                 imageWidth = original.width,
                 imageHeight = original.height,
             )
@@ -126,8 +154,10 @@ internal object CameraOcrEngine {
             CameraOcrResult(
                 imageWidth = original.width,
                 imageHeight = original.height,
-                fullText = blocks.joinToString("\n") { it.text }.trim(),
+                fullText = lines.joinToString("\n") { it.text }.trim(),
                 blocks = blocks,
+                lines = lines,
+                words = words,
                 languageSpec = primaryLanguage,
             )
         } finally {
@@ -182,8 +212,30 @@ internal object CameraOcrEngine {
                                         rect = Rect(rect),
                                         confidence = MLKIT_DEFAULT_CONFIDENCE,
                                         source = source,
+                                        level = OcrLevel.LINE,
                                     ),
                                 )
+                            }
+
+                            line.elements.forEach { element ->
+                                val wordRect = element.boundingBox
+                                val wordText = element.text.trim()
+                                if (
+                                    wordRect != null &&
+                                    wordText.isMeaningfulOcrText() &&
+                                    wordRect.width() >= MIN_BOX_PIXELS &&
+                                    wordRect.height() >= MIN_BOX_PIXELS
+                                ) {
+                                    add(
+                                        RawOcrLine(
+                                            text = wordText,
+                                            rect = Rect(wordRect),
+                                            confidence = MLKIT_DEFAULT_CONFIDENCE,
+                                            source = source,
+                                            level = OcrLevel.WORD,
+                                        ),
+                                    )
+                                }
                             }
                         }
                     }
@@ -261,6 +313,7 @@ internal object CameraOcrEngine {
         val lines = collectIteratorLevel(
             tess = tess,
             level = TessBaseAPI.PageIteratorLevel.RIL_TEXTLINE,
+            ocrLevel = OcrLevel.LINE,
             imageScale = imageScale,
             originalWidth = originalWidth,
             originalHeight = originalHeight,
@@ -269,30 +322,22 @@ internal object CameraOcrEngine {
         val words = collectIteratorLevel(
             tess = tess,
             level = TessBaseAPI.PageIteratorLevel.RIL_WORD,
+            ocrLevel = OcrLevel.WORD,
             imageScale = imageScale,
             originalWidth = originalWidth,
             originalHeight = originalHeight,
             minConfidence = WORD_MIN_CONFIDENCE,
         )
 
-        // Always keep word-level candidates as well. Large isolated words on
-        // packaging (AQUA, SPRAY, 99%) can disappear from TEXTLINE even when
-        // Tesseract has a good word box. Suppress only words already represented
-        // by an equivalent text line.
-        val extraWords = words.filter { word ->
-            val normalizedWord = normalizedText(word.text)
-            lines.none { line ->
-                normalizedWord.isNotEmpty() &&
-                    normalizedText(line.text).contains(normalizedWord) &&
-                    rectContainmentOverlap(line.rect, word.rect) >= WORD_INSIDE_LINE_OVERLAP
-            }
-        }
-        return lines + extraWords
+        // Keep hierarchy intact. Lines are used to build translation blocks,
+        // while words retain their own coordinates for precise future overlays.
+        return lines + words
     }
 
     private fun collectIteratorLevel(
         tess: TessBaseAPI,
         level: Int,
+        ocrLevel: OcrLevel,
         imageScale: Float,
         originalWidth: Int,
         originalHeight: Int,
@@ -324,6 +369,7 @@ internal object CameraOcrEngine {
                             rect = rect,
                             confidence = confidence,
                             source = OcrSource.TESSERACT,
+                            level = ocrLevel,
                         )
                     }
                 }
@@ -449,6 +495,7 @@ internal object CameraOcrEngine {
             .sortedByDescending(::sourceAwareScore)
             .forEach { candidate ->
                 val duplicate = accepted.any { existing ->
+                    if (existing.level != candidate.level) return@any false
                     val iou = rectIou(existing.rect, candidate.rect)
                     val containment = rectContainmentOverlap(existing.rect, candidate.rect)
                     val normalizedExisting = normalizedText(existing.text)
@@ -510,6 +557,50 @@ internal object CameraOcrEngine {
             han -> OcrScript.HAN
             else -> OcrScript.LATIN
         }
+    }
+
+    private fun addOrphanWordsAsLines(
+        lines: List<RawOcrLine>,
+        words: List<RawOcrLine>,
+    ): List<RawOcrLine> {
+        val synthetic = words.filter { word ->
+            lines.none { line -> wordBelongsToLine(line.rect, word.rect) }
+        }.map { word ->
+            word.copy(level = OcrLevel.LINE)
+        }
+        return deduplicateLines(lines + synthetic)
+            .filter { it.level == OcrLevel.LINE }
+            .sortedWith(compareBy<RawOcrLine> { it.rect.top }.thenBy { it.rect.left })
+    }
+
+    private fun buildStructuredLines(
+        lines: List<RawOcrLine>,
+        words: List<CameraOcrWord>,
+    ): List<CameraOcrLine> = lines
+        .sortedWith(compareBy<RawOcrLine> { it.rect.top }.thenBy { it.rect.left })
+        .map { line ->
+            val lineWords = words
+                .filter { word -> wordBelongsToLine(line.rect, word.rect) }
+                .sortedBy { it.rect.left }
+            CameraOcrLine(
+                text = line.text,
+                rect = Rect(line.rect),
+                confidence = line.confidence,
+                words = lineWords,
+            )
+        }
+
+    private fun wordBelongsToLine(line: Rect, word: Rect): Boolean {
+        val containment = rectContainmentOverlap(line, word)
+        if (containment >= WORD_TO_LINE_CONTAINMENT) return true
+
+        val verticalOverlap = overlapLength(line.top, line.bottom, word.top, word.bottom).toFloat() /
+            min(line.height(), word.height()).coerceAtLeast(1)
+        if (verticalOverlap < WORD_TO_LINE_VERTICAL_OVERLAP) return false
+
+        val wordCenterX = (word.left + word.right) / 2f
+        val margin = line.height().coerceAtLeast(1) * WORD_TO_LINE_HORIZONTAL_MARGIN
+        return wordCenterX >= line.left - margin && wordCenterX <= line.right + margin
     }
 
     private fun groupLinesIntoBlocks(
@@ -843,9 +934,11 @@ internal object CameraOcrEngine {
     }
 
     private fun isWeakResult(lines: List<RawOcrLine>): Boolean {
-        val characters = lines.sumOf { it.text.count(Char::isLetterOrDigit) }
-        val averageConfidence = lines.map { it.confidence }.average().takeUnless { it.isNaN() } ?: 0.0
-        return lines.size < 3 || characters < 24 || averageConfidence < 38.0
+        val lineCandidates = lines.filter { it.level == OcrLevel.LINE }.ifEmpty { lines }
+        val characters = lineCandidates.sumOf { it.text.count(Char::isLetterOrDigit) }
+        val averageConfidence = lineCandidates.map { it.confidence }.average()
+            .takeUnless { it.isNaN() } ?: 0.0
+        return lineCandidates.size < 3 || characters < 24 || averageConfidence < 38.0
     }
 
     private fun detectDominantLanguage(lines: List<RawOcrLine>): String? {
@@ -921,6 +1014,9 @@ internal object CameraOcrEngine {
     private const val RAW_MIN_CONFIDENCE = 10f
     private const val WORD_MIN_CONFIDENCE = 24f
     private const val WORD_INSIDE_LINE_OVERLAP = 0.84f
+    private const val WORD_TO_LINE_CONTAINMENT = 0.58f
+    private const val WORD_TO_LINE_VERTICAL_OVERLAP = 0.55f
+    private const val WORD_TO_LINE_HORIZONTAL_MARGIN = 0.65f
     private const val FINAL_MIN_CONFIDENCE = 20f
     private const val MIN_ALPHANUMERIC_CHARS = 2
     private const val MIN_BOX_PIXELS = 6
@@ -978,7 +1074,8 @@ internal fun CameraOcrOverlay(
     result: CameraOcrResult,
     modifier: Modifier = Modifier,
 ) {
-    val strokeWidth = 2.dp
+    val lineStrokeWidth = 2.dp
+    val wordStrokeWidth = 1.dp
     Canvas(modifier = modifier) {
         if (result.imageWidth <= 0 || result.imageHeight <= 0) return@Canvas
 
@@ -991,10 +1088,9 @@ internal fun CameraOcrOverlay(
         val offsetX = (size.width - displayedWidth) / 2f
         val offsetY = (size.height - displayedHeight) / 2f
 
-        result.blocks.forEach { block ->
-            val rect = block.rect
+        fun drawOcrRect(rect: Rect, color: Color, stroke: Float) {
             drawRect(
-                color = Color(0xFF55D6FF),
+                color = color,
                 topLeft = Offset(
                     x = offsetX + rect.left * scale,
                     y = offsetY + rect.top * scale,
@@ -1003,7 +1099,25 @@ internal fun CameraOcrOverlay(
                     width = rect.width() * scale,
                     height = rect.height() * scale,
                 ),
-                style = Stroke(width = strokeWidth.toPx()),
+                style = Stroke(width = stroke),
+            )
+        }
+
+        // Thin amber boxes show exact word coordinates. Cyan boxes show complete
+        // text lines. Translation blocks are kept internally but are no longer
+        // used for geometry debugging because they intentionally span paragraphs.
+        result.words.forEach { word ->
+            drawOcrRect(
+                rect = word.rect,
+                color = Color(0xB8FFE082),
+                stroke = wordStrokeWidth.toPx(),
+            )
+        }
+        result.lines.forEach { line ->
+            drawOcrRect(
+                rect = line.rect,
+                color = Color(0xFF55D6FF),
+                stroke = lineStrokeWidth.toPx(),
             )
         }
     }
