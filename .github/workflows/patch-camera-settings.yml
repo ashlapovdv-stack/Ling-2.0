@@ -1,0 +1,330 @@
+name: Patch camera default language settings
+
+on:
+  push:
+    paths:
+      - '.github/workflows/patch-camera-settings.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch camera settings
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path('app/src/main/java/com/ling20/translator/LingApp.kt')
+          text = path.read_text()
+
+          def replace_once(old, new):
+              global text
+              if old not in text:
+                  raise SystemExit(f'Pattern not found:\n{old[:300]}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              'private enum class SettingsPage { ROOT, TRANSLATION, MODEL, HISTORY }',
+              'private enum class SettingsPage { ROOT, TRANSLATION, CAMERA, MODEL, HISTORY }',
+          )
+
+          replace_once(
+              'private const val PREF_DEFAULT_TARGET = "default_target_language"\n',
+              'private const val PREF_DEFAULT_TARGET = "default_target_language"\n'
+              'private const val CAMERA_PREFS = "ling_camera_settings"\n'
+              'private const val PREF_CAMERA_DEFAULT_SOURCE = "camera_default_source_language"\n'
+              'private const val PREF_CAMERA_DEFAULT_TARGET = "camera_default_target_language"\n',
+          )
+
+          replace_once(
+              '    val translationPreferences = remember(context) {\n'
+              '        context.applicationContext.getSharedPreferences(TRANSLATION_PREFS, Context.MODE_PRIVATE)\n'
+              '    }\n',
+              '    val translationPreferences = remember(context) {\n'
+              '        context.applicationContext.getSharedPreferences(TRANSLATION_PREFS, Context.MODE_PRIVATE)\n'
+              '    }\n'
+              '    val cameraPreferences = remember(context) {\n'
+              '        context.applicationContext.getSharedPreferences(CAMERA_PREFS, Context.MODE_PRIVATE)\n'
+              '    }\n',
+          )
+
+          marker = '''    val initialDefaultTarget = remember(translationPreferences) {
+        val saved = translationPreferences.getString(
+            PREF_DEFAULT_TARGET,
+            Language.ENGLISH.name,
+        )
+        runCatching { Language.valueOf(saved ?: Language.ENGLISH.name) }
+            .getOrDefault(Language.ENGLISH)
+    }
+'''
+          addition = marker + '''    val initialCameraDefaultSource = remember(cameraPreferences, initialDefaultSource) {
+        val saved = cameraPreferences.getString(
+            PREF_CAMERA_DEFAULT_SOURCE,
+            initialDefaultSource.name,
+        )
+        runCatching { SourceLanguageOption.valueOf(saved ?: initialDefaultSource.name) }
+            .getOrDefault(initialDefaultSource)
+    }
+    val initialCameraDefaultTarget = remember(cameraPreferences, initialDefaultTarget) {
+        val saved = cameraPreferences.getString(
+            PREF_CAMERA_DEFAULT_TARGET,
+            initialDefaultTarget.name,
+        )
+        runCatching { Language.valueOf(saved ?: initialDefaultTarget.name) }
+            .getOrDefault(initialDefaultTarget)
+    }
+'''
+          replace_once(marker, addition)
+
+          replace_once(
+              '    var defaultSourceName by remember { mutableStateOf(initialDefaultSource.name) }\n'
+              '    var defaultTargetName by remember { mutableStateOf(initialDefaultTarget.name) }\n',
+              '    var defaultSourceName by remember { mutableStateOf(initialDefaultSource.name) }\n'
+              '    var defaultTargetName by remember { mutableStateOf(initialDefaultTarget.name) }\n'
+              '    var cameraDefaultSourceName by remember { mutableStateOf(initialCameraDefaultSource.name) }\n'
+              '    var cameraDefaultTargetName by remember { mutableStateOf(initialCameraDefaultTarget.name) }\n',
+          )
+
+          replace_once(
+              '    val defaultTarget = runCatching { Language.valueOf(defaultTargetName) }\n'
+              '        .getOrDefault(Language.ENGLISH)\n',
+              '    val defaultTarget = runCatching { Language.valueOf(defaultTargetName) }\n'
+              '        .getOrDefault(Language.ENGLISH)\n'
+              '    val cameraDefaultSource = runCatching { SourceLanguageOption.valueOf(cameraDefaultSourceName) }\n'
+              '        .getOrDefault(initialCameraDefaultSource)\n'
+              '    val cameraDefaultTarget = runCatching { Language.valueOf(cameraDefaultTargetName) }\n'
+              '        .getOrDefault(initialCameraDefaultTarget)\n',
+          )
+
+          replace_once(
+              '                AppSection.CAMERA -> CameraModeScreen(\n'
+              '          defaultSource = defaultSource.language,\n'
+              '          defaultTarget = defaultTarget,\n'
+              '      )\n',
+              '                AppSection.CAMERA -> CameraModeScreen(\n'
+              '                    defaultSource = cameraDefaultSource.language,\n'
+              '                    defaultTarget = cameraDefaultTarget,\n'
+              '                )\n',
+          )
+
+          replace_once(
+              '                        defaultSource = defaultSource,\n'
+              '                        onTranslation = { settingsPage = SettingsPage.TRANSLATION },\n'
+              '                        onModel = { settingsPage = SettingsPage.MODEL },\n',
+              '                        defaultSource = defaultSource,\n'
+              '                        cameraDefaultSource = cameraDefaultSource,\n'
+              '                        cameraDefaultTarget = cameraDefaultTarget,\n'
+              '                        onTranslation = { settingsPage = SettingsPage.TRANSLATION },\n'
+              '                        onCamera = { settingsPage = SettingsPage.CAMERA },\n'
+              '                        onModel = { settingsPage = SettingsPage.MODEL },\n',
+          )
+
+          camera_case = '''                    SettingsPage.CAMERA -> CameraSettings(
+                        defaultSource = cameraDefaultSource,
+                        defaultTarget = cameraDefaultTarget,
+                        onBack = { settingsPage = SettingsPage.ROOT },
+                        onDefaultSourceChanged = { selected ->
+                            cameraDefaultSourceName = selected.name
+                            cameraPreferences.edit()
+                                .putString(PREF_CAMERA_DEFAULT_SOURCE, selected.name)
+                                .apply()
+                            if (selected.language == cameraDefaultTarget) {
+                                cameraDefaultTargetName = Language.entries.first { it != selected.language }.name
+                                cameraPreferences.edit()
+                                    .putString(PREF_CAMERA_DEFAULT_TARGET, cameraDefaultTargetName)
+                                    .apply()
+                            }
+                        },
+                        onDefaultTargetChanged = { selected ->
+                            cameraDefaultTargetName = selected.name
+                            cameraPreferences.edit()
+                                .putString(PREF_CAMERA_DEFAULT_TARGET, selected.name)
+                                .apply()
+                            if (cameraDefaultSource.language == selected) {
+                                cameraDefaultSourceName = SourceLanguageOption.AUTO.name
+                                cameraPreferences.edit()
+                                    .putString(PREF_CAMERA_DEFAULT_SOURCE, SourceLanguageOption.AUTO.name)
+                                    .apply()
+                            }
+                        },
+                    )
+
+'''
+          replace_once(
+              '                    SettingsPage.MODEL -> ModelSettings(\n',
+              camera_case + '                    SettingsPage.MODEL -> ModelSettings(\n',
+          )
+
+          replace_once(
+              '    historyCount: Int,\n'
+              '    defaultSource: SourceLanguageOption,\n'
+              '    onTranslation: () -> Unit,\n'
+              '    onModel: () -> Unit,\n',
+              '    historyCount: Int,\n'
+              '    defaultSource: SourceLanguageOption,\n'
+              '    cameraDefaultSource: SourceLanguageOption,\n'
+              '    cameraDefaultTarget: Language,\n'
+              '    onTranslation: () -> Unit,\n'
+              '    onCamera: () -> Unit,\n'
+              '    onModel: () -> Unit,\n',
+          )
+
+          translation_row = '''        SettingsRow(
+            icon = { Icon(Icons.Default.Translate, contentDescription = null) },
+            title = "Перевод",
+            subtitle = "Язык ввода по умолчанию: ${defaultSource.settingsLabel()}",
+            onClick = onTranslation,
+        )
+'''
+          camera_row = translation_row + '''
+        SettingsRow(
+            icon = { Icon(Icons.Default.CameraAlt, contentDescription = null) },
+            title = "Камера",
+            subtitle = "Ввод: ${cameraDefaultSource.settingsLabel()} · Вывод: ${cameraDefaultTarget.displayName}",
+            onClick = onCamera,
+        )
+'''
+          replace_once(translation_row, camera_row)
+
+          marker2 = '''private fun SourceLanguageOption.settingsLabel(): String = when (this) {
+    SourceLanguageOption.AUTO -> "Автоопределение"
+    else -> displayName
+}
+'''
+          camera_settings = '''@Composable
+private fun CameraSettings(
+    defaultSource: SourceLanguageOption,
+    defaultTarget: Language,
+    onBack: () -> Unit,
+    onDefaultSourceChanged: (SourceLanguageOption) -> Unit,
+    onDefaultTargetChanged: (Language) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.Default.ArrowBack, contentDescription = "Назад")
+            }
+            Text(
+                "Камера",
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    "Язык ввода по умолчанию",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                SourceLanguagePicker(
+                    source = defaultSource,
+                    enabled = true,
+                    onSelected = onDefaultSourceChanged,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "Доступны: Автоопределение, Русский, English и 中文. Этот язык используется при открытии камеры.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    "Язык вывода по умолчанию",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                LanguagePicker(
+                    language = defaultTarget,
+                    enabled = true,
+                    onSelected = onDefaultTargetChanged,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "Доступны: Русский, English и 中文. Этот язык используется как язык результата в режиме камеры.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+'''
+          replace_once(marker2, camera_settings + marker2)
+
+          path.write_text(text)
+
+          camera = Path('app/src/main/java/com/ling20/translator/CameraModeScreen.kt')
+          ctext = camera.read_text()
+          old = '''    var sourceName by rememberSaveable {
+        mutableStateOf(
+            if (defaultSource == defaultTarget) CameraSourceLanguage.AUTO.name
+            else CameraSourceLanguage.from(defaultSource).name,
+        )
+    }
+    var targetName by rememberSaveable { mutableStateOf(defaultTarget.name) }
+'''
+          new = '''    var sourceName by rememberSaveable(defaultSource, defaultTarget) {
+        mutableStateOf(
+            if (defaultSource == defaultTarget) CameraSourceLanguage.AUTO.name
+            else CameraSourceLanguage.from(defaultSource).name,
+        )
+    }
+    var targetName by rememberSaveable(defaultTarget) { mutableStateOf(defaultTarget.name) }
+'''
+          if old not in ctext:
+              raise SystemExit('CameraModeScreen defaults block not found')
+          camera.write_text(ctext.replace(old, new, 1))
+
+          gradle = Path('app/build.gradle.kts')
+          gtext = gradle.read_text()
+          if 'versionCode = 13' not in gtext or 'versionName = "0.1.12"' not in gtext:
+              raise SystemExit('Unexpected current version')
+          gtext = gtext.replace('versionCode = 13', 'versionCode = 14', 1)
+          gtext = gtext.replace('versionName = "0.1.12"', 'versionName = "0.1.13"', 1)
+          gradle.write_text(gtext)
+          PY
+
+      - name: Commit patch
+        shell: bash
+        run: |
+          git config user.name "Ling CI"
+          git config user.email "actions@github.com"
+          git rm .github/workflows/patch-camera-settings.yml
+          git add app/src/main/java/com/ling20/translator/LingApp.kt app/src/main/java/com/ling20/translator/CameraModeScreen.kt app/build.gradle.kts
+          git commit -m "Add camera default language settings"
+          git push
