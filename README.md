@@ -55,7 +55,7 @@ Implemented and CI-build verified:
 - inference runs off the UI thread
 - no server/API translation fallback
 - no Android `INTERNET` permission
-- Camera stage 1: full-screen CameraX preview, runtime camera permission, photo capture, gallery image selection and front/back camera switching
+- Camera stage 1: full-screen CameraX preview, runtime camera permission, photo capture, gallery image selection, rear-camera torch control and language flags
 
 Camera OCR/translation and Dialog mode are the next implementation phases.
 
