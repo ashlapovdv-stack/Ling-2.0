@@ -22,369 +22,182 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          camera = Path('app/src/main/java/com/ling20/translator/CameraModeScreen.kt')
+          def block(lines):
+              return "\n".join(lines)
+
+          def replace_once(text, old_lines, new_lines, name):
+              old = block(old_lines)
+              new = block(new_lines)
+              if old not in text:
+                  raise RuntimeError(f"{name} anchor not found")
+              return text.replace(old, new, 1)
+
+          camera = Path("app/src/main/java/com/ling20/translator/CameraModeScreen.kt")
           text = camera.read_text()
 
-          old = '''internal fun CameraModeScreen(
-              defaultSource: Language?,
-              defaultTarget: Language,
-          ) {'''
-          new = '''internal fun CameraModeScreen(
-              defaultSource: Language?,
-              defaultTarget: Language,
-              engine: LlamaTranslationEngine,
-              modelReady: Boolean,
-          ) {'''
-          assert old in text
-          text = text.replace(old, new, 1)
+          text = replace_once(text, [
+              "internal fun CameraModeScreen(",
+              "    defaultSource: Language?,",
+              "    defaultTarget: Language,",
+              ") {",
+          ], [
+              "internal fun CameraModeScreen(",
+              "    defaultSource: Language?,",
+              "    defaultTarget: Language,",
+              "    engine: LlamaTranslationEngine,",
+              "    modelReady: Boolean,",
+              ") {",
+          ], "camera signature")
 
-          old = '''    var ocrResult by remember { mutableStateOf<CameraOcrResult?>(null) }
-              var ocrRunning by remember { mutableStateOf(false) }
-              var ocrError by rememberSaveable { mutableStateOf<String?>(null) }
-          '''
-          new = '''    var ocrResult by remember { mutableStateOf<CameraOcrResult?>(null) }
-              var ocrRunning by remember { mutableStateOf(false) }
-              var ocrError by rememberSaveable { mutableStateOf<String?>(null) }
-              var translatedBlocks by remember { mutableStateOf<List<CameraTranslatedBlock>>(emptyList()) }
-              var translationRunning by remember { mutableStateOf(false) }
-              var translationError by rememberSaveable { mutableStateOf<String?>(null) }
-          '''
-          assert old in text
-          text = text.replace(old, new, 1)
+          text = replace_once(text, [
+              "    var ocrResult by remember { mutableStateOf<CameraOcrResult?>(null) }",
+              "    var ocrRunning by remember { mutableStateOf(false) }",
+              "    var ocrError by rememberSaveable { mutableStateOf<String?>(null) }",
+          ], [
+              "    var ocrResult by remember { mutableStateOf<CameraOcrResult?>(null) }",
+              "    var ocrRunning by remember { mutableStateOf(false) }",
+              "    var ocrError by rememberSaveable { mutableStateOf<String?>(null) }",
+              "    var translatedBlocks by remember { mutableStateOf<List<CameraTranslatedBlock>>(emptyList()) }",
+              "    var translationRunning by remember { mutableStateOf(false) }",
+              "    var translationError by rememberSaveable { mutableStateOf<String?>(null) }",
+          ], "translation state")
 
-          old = '''            ocrRunning = false
-              }
-          }
+          text = replace_once(text, [
+              "            ocrRunning = false",
+              "        }",
+              "    }",
+              "",
+              "    Box(",
+          ], [
+              "            ocrRunning = false",
+              "        }",
+              "    }",
+              "",
+              "    LaunchedEffect(ocrResult, source.language, target, modelReady) {",
+              "        val result = ocrResult",
+              "        translatedBlocks = emptyList()",
+              "        translationError = null",
+              "",
+              "        if (result == null || (result.blocks.isEmpty() && result.lines.isEmpty())) {",
+              "            translationRunning = false",
+              "            return@LaunchedEffect",
+              "        }",
+              "        if (!modelReady || !engine.isReady) {",
+              "            translationRunning = false",
+              "            translationError = \"OCR готов. Для перевода загрузите локальную модель.\"",
+              "            return@LaunchedEffect",
+              "        }",
+              "",
+              "        translationRunning = true",
+              "        runCatching {",
+              "            translateCameraOcrBlocks(",
+              "                engine = engine,",
+              "                result = result,",
+              "                explicitSource = source.language,",
+              "                target = target,",
+              "            )",
+              "        }.onSuccess { translated ->",
+              "            translatedBlocks = translated",
+              "        }.onFailure { error ->",
+              "            translationError = \"Ошибка перевода: ${error.message ?: \"неизвестная ошибка\"}\"",
+              "        }",
+              "        translationRunning = false",
+              "    }",
+              "",
+              "    Box(",
+          ], "translation effect")
 
-          Box(
-          '''
-          new = '''            ocrRunning = false
-              }
-          }
+          text = replace_once(text, [
+              "                ocrResult?.let { result ->",
+              "                    CameraOcrOverlay(",
+              "                        result = result,",
+              "                        modifier = Modifier.fillMaxSize(),",
+              "                    )",
+              "                }",
+          ], [
+              "                ocrResult?.let { result ->",
+              "                    if (translatedBlocks.isNotEmpty()) {",
+              "                        CameraTranslationOverlay(",
+              "                            result = result,",
+              "                            translations = translatedBlocks,",
+              "                            modifier = Modifier.fillMaxSize(),",
+              "                        )",
+              "                    } else {",
+              "                        CameraOcrOverlay(",
+              "                            result = result,",
+              "                            modifier = Modifier.fillMaxSize(),",
+              "                        )",
+              "                    }",
+              "                }",
+          ], "overlay render")
 
-          LaunchedEffect(ocrResult, source.language, target, modelReady) {
-              val result = ocrResult
-              translatedBlocks = emptyList()
-              translationError = null
-
-              if (result == null || result.blocks.isEmpty() && result.lines.isEmpty()) {
-                  translationRunning = false
-                  return@LaunchedEffect
-              }
-              if (!modelReady || !engine.isReady) {
-                  translationRunning = false
-                  translationError = "OCR готов. Для перевода загрузите локальную модель."
-                  return@LaunchedEffect
-              }
-
-              translationRunning = true
-              runCatching {
-                  translateCameraOcrBlocks(
-                      engine = engine,
-                      result = result,
-                      explicitSource = source.language,
-                      target = target,
-                  )
-              }.onSuccess { translated ->
-                  translatedBlocks = translated
-              }.onFailure { error ->
-                  translationError = "Ошибка перевода: ${error.message ?: "неизвестная ошибка"}"
-              }
-              translationRunning = false
-          }
-
-          Box(
-          '''
-          assert old in text
-          text = text.replace(old, new, 1)
-
-          old = '''                ocrResult?.let { result ->
-                      CameraOcrOverlay(
-                          result = result,
-                          modifier = Modifier.fillMaxSize(),
-                      )
-                  }
-          '''
-          new = '''                ocrResult?.let { result ->
-                      if (translatedBlocks.isNotEmpty()) {
-                          CameraTranslationOverlay(
-                              result = result,
-                              translations = translatedBlocks,
-                              modifier = Modifier.fillMaxSize(),
-                          )
-                      } else {
-                          CameraOcrOverlay(
-                              result = result,
-                              modifier = Modifier.fillMaxSize(),
-                          )
-                      }
-                  }
-          '''
-          assert old in text
-          text = text.replace(old, new, 1)
-
-          marker = '''        Box(
-              modifier = Modifier
-                  .align(Alignment.BottomCenter)
-                  .fillMaxWidth()
-                  .height(170.dp)
-          '''
-          insert = '''        if (selectedImageUri != null && (translationRunning || translationError != null)) {
-              Surface(
-                  modifier = Modifier
-                      .align(Alignment.TopCenter)
-                      .padding(top = 120.dp, start = 18.dp, end = 18.dp),
-                  shape = RoundedCornerShape(12.dp),
-                  color = if (translationError != null) Color(0xD9B42318) else CameraOverlayStrong,
-                  contentColor = Color.White,
-              ) {
-                  Row(
-                      modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
-                      verticalAlignment = Alignment.CenterVertically,
-                      horizontalArrangement = Arrangement.spacedBy(8.dp),
-                  ) {
-                      if (translationRunning) {
-                          CircularProgressIndicator(
-                              modifier = Modifier.size(14.dp),
-                              strokeWidth = 2.dp,
-                              color = Color.White,
-                          )
-                      }
-                      Text(
-                          if (translationRunning) "Перевожу текст на изображении…" else translationError!!,
-                          style = MaterialTheme.typography.labelMedium,
-                      )
-                  }
-              }
-          }
-
-          ''' + marker
-          assert marker in text
-          text = text.replace(marker, insert, 1)
+          bottom = block([
+              "        Box(",
+              "            modifier = Modifier",
+              "                .align(Alignment.BottomCenter)",
+              "                .fillMaxWidth()",
+              "                .height(170.dp)",
+          ])
+          status = block([
+              "        if (selectedImageUri != null && (translationRunning || translationError != null)) {",
+              "            Surface(",
+              "                modifier = Modifier",
+              "                    .align(Alignment.TopCenter)",
+              "                    .padding(top = 120.dp, start = 18.dp, end = 18.dp),",
+              "                shape = RoundedCornerShape(12.dp),",
+              "                color = if (translationError != null) Color(0xD9B42318) else CameraOverlayStrong,",
+              "                contentColor = Color.White,",
+              "            ) {",
+              "                Row(",
+              "                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),",
+              "                    verticalAlignment = Alignment.CenterVertically,",
+              "                    horizontalArrangement = Arrangement.spacedBy(8.dp),",
+              "                ) {",
+              "                    if (translationRunning) {",
+              "                        CircularProgressIndicator(",
+              "                            modifier = Modifier.size(14.dp),",
+              "                            strokeWidth = 2.dp,",
+              "                            color = Color.White,",
+              "                        )",
+              "                    }",
+              "                    Text(",
+              "                        if (translationRunning) \"Перевожу текст на изображении…\" else translationError!!,",
+              "                        style = MaterialTheme.typography.labelMedium,",
+              "                    )",
+              "                }",
+              "            }",
+              "        }",
+              "",
+          ])
+          if bottom not in text:
+              raise RuntimeError("bottom overlay anchor not found")
+          text = text.replace(bottom, status + bottom, 1)
           camera.write_text(text)
 
-          app = Path('app/src/main/java/com/ling20/translator/LingApp.kt')
+          app = Path("app/src/main/java/com/ling20/translator/LingApp.kt")
           text = app.read_text()
-          old = '''                AppSection.CAMERA -> CameraModeScreen(
-                      defaultSource = cameraDefaultSource.language,
-                      defaultTarget = cameraDefaultTarget,
-                  )'''
-          new = '''                AppSection.CAMERA -> CameraModeScreen(
-                      defaultSource = cameraDefaultSource.language,
-                      defaultTarget = cameraDefaultTarget,
-                      engine = engine,
-                      modelReady = engineReady,
-                  )'''
-          assert old in text
-          app.write_text(text.replace(old, new, 1))
+          text = replace_once(text, [
+              "                AppSection.CAMERA -> CameraModeScreen(",
+              "                    defaultSource = cameraDefaultSource.language,",
+              "                    defaultTarget = cameraDefaultTarget,",
+              "                )",
+          ], [
+              "                AppSection.CAMERA -> CameraModeScreen(",
+              "                    defaultSource = cameraDefaultSource.language,",
+              "                    defaultTarget = cameraDefaultTarget,",
+              "                    engine = engine,",
+              "                    modelReady = engineReady,",
+              "                )",
+          ], "LingApp camera call")
+          app.write_text(text)
 
-          gradle = Path('app/build.gradle.kts')
+          gradle = Path("app/build.gradle.kts")
           text = gradle.read_text()
-          assert 'versionCode = 26' in text
-          assert 'versionName = "0.1.15.10"' in text
-          text = text.replace('versionCode = 26', 'versionCode = 27', 1)
+          if 'versionCode = 26' not in text or 'versionName = "0.1.15.10"' not in text:
+              raise RuntimeError("unexpected version before B2")
+          text = text.replace("versionCode = 26", "versionCode = 27", 1)
           text = text.replace('versionName = "0.1.15.10"', 'versionName = "0.1.16.0"', 1)
           gradle.write_text(text)
-
-          overlay = Path('app/src/main/java/com/ling20/translator/CameraTranslationOverlay.kt')
-          overlay.write_text(r'''package com.ling20.translator
-
-          import android.graphics.Rect
-          import androidx.compose.foundation.layout.BoxWithConstraints
-          import androidx.compose.foundation.layout.heightIn
-          import androidx.compose.foundation.layout.offset
-          import androidx.compose.foundation.layout.padding
-          import androidx.compose.foundation.layout.width
-          import androidx.compose.foundation.shape.RoundedCornerShape
-          import androidx.compose.material3.Surface
-          import androidx.compose.material3.Text
-          import androidx.compose.runtime.Composable
-          import androidx.compose.ui.Modifier
-          import androidx.compose.ui.graphics.Color
-          import androidx.compose.ui.platform.LocalDensity
-          import androidx.compose.ui.text.font.FontWeight
-          import androidx.compose.ui.text.style.TextOverflow
-          import androidx.compose.ui.unit.dp
-          import androidx.compose.ui.unit.sp
-          import kotlinx.coroutines.Dispatchers
-          import kotlinx.coroutines.withContext
-          import kotlin.math.ceil
-          import kotlin.math.max
-          import kotlin.math.min
-
-          data class CameraTranslatedBlock(
-              val rect: Rect,
-              val originalText: String,
-              val translatedText: String,
-          )
-
-          internal suspend fun translateCameraOcrBlocks(
-              engine: TranslationEngine,
-              result: CameraOcrResult,
-              explicitSource: Language?,
-              target: Language,
-          ): List<CameraTranslatedBlock> = withContext(Dispatchers.Default) {
-              check(engine.isReady) { "Локальная модель не загружена" }
-
-              val candidates = if (result.blocks.isNotEmpty()) {
-                  result.blocks
-              } else {
-                  result.lines.map { line ->
-                      CameraOcrBlock(
-                          text = line.text,
-                          rect = Rect(line.rect),
-                          confidence = line.confidence,
-                      )
-                  }
-              }
-
-              val translated = mutableListOf<CameraTranslatedBlock>()
-              var attempted = 0
-              var lastFailure: Throwable? = null
-
-              candidates.forEach { block ->
-                  val clean = block.text
-                      .replace(Regex("\\s+"), " ")
-                      .trim()
-                  if (clean.count(Char::isLetter) < 2) return@forEach
-
-                  val source = explicitSource ?: detectCameraBlockLanguage(clean) ?: return@forEach
-                  // In Auto mode labels already written in the requested target language
-                  // stay untouched. This keeps brands such as "Compliment" readable while
-                  // Russian/Chinese neighbours are translated on the same photograph.
-                  if (source == target) return@forEach
-
-                  attempted++
-                  runCatching {
-                      engine.translate(clean, source, target).trim()
-                  }.onSuccess { output ->
-                      if (output.isNotBlank()) {
-                          translated += CameraTranslatedBlock(
-                              rect = Rect(block.rect),
-                              originalText = block.text,
-                              translatedText = output,
-                          )
-                      }
-                  }.onFailure { error ->
-                      lastFailure = error
-                  }
-              }
-
-              if (translated.isEmpty() && attempted > 0 && lastFailure != null) {
-                  throw lastFailure!!
-              }
-              translated
-          }
-
-          private fun detectCameraBlockLanguage(text: String): Language? {
-              var cyrillic = 0
-              var latin = 0
-              var han = 0
-              text.forEach { char ->
-                  when {
-                      char in '\u0400'..'\u04FF' -> cyrillic++
-                      char in '\u4E00'..'\u9FFF' -> han++
-                      char.isLetter() && char.code < 0x0250 -> latin++
-                  }
-              }
-              val strongest = max(cyrillic, max(latin, han))
-              if (strongest == 0) return null
-              return when (strongest) {
-                  han -> Language.CHINESE
-                  cyrillic -> Language.RUSSIAN
-                  else -> Language.ENGLISH
-              }
-          }
-
-          @Composable
-          internal fun CameraTranslationOverlay(
-              result: CameraOcrResult,
-              translations: List<CameraTranslatedBlock>,
-              modifier: Modifier = Modifier,
-          ) {
-              if (result.imageWidth <= 0 || result.imageHeight <= 0 || translations.isEmpty()) return
-
-              BoxWithConstraints(modifier = modifier) {
-                  val density = LocalDensity.current
-                  val containerWidthPx = with(density) { maxWidth.toPx() }
-                  val containerHeightPx = with(density) { maxHeight.toPx() }
-                  val scale = min(
-                      containerWidthPx / result.imageWidth.toFloat(),
-                      containerHeightPx / result.imageHeight.toFloat(),
-                  )
-                  val displayedWidth = result.imageWidth * scale
-                  val displayedHeight = result.imageHeight * scale
-                  val imageOffsetX = (containerWidthPx - displayedWidth) / 2f
-                  val imageOffsetY = (containerHeightPx - displayedHeight) / 2f
-
-                  translations.forEach { block ->
-                      val leftPx = imageOffsetX + block.rect.left * scale
-                      val topPx = imageOffsetY + block.rect.top * scale
-                      val sourceWidthPx = block.rect.width() * scale
-                      val sourceHeightPx = block.rect.height() * scale
-                      val availableWidthPx = (containerWidthPx - leftPx).coerceAtLeast(1f)
-                      val cardWidthPx = min(sourceWidthPx.coerceAtLeast(with(density) { 38.dp.toPx() }), availableWidthPx)
-
-                      val left = with(density) { leftPx.toDp() }
-                      val top = with(density) { topPx.toDp() }
-                      val width = with(density) { cardWidthPx.toDp() }
-                      val minHeight = with(density) { sourceHeightPx.toDp() }
-                      val fontSp = estimateOverlayFontSp(
-                          widthDp = width.value,
-                          heightDp = minHeight.value,
-                          translatedText = block.translatedText,
-                          originalText = block.originalText,
-                      )
-
-                      Surface(
-                          modifier = Modifier
-                              .offset(x = left, y = top)
-                              .width(width)
-                              .heightIn(min = minHeight.coerceAtLeast(12.dp)),
-                          shape = RoundedCornerShape(5.dp),
-                          color = Color.White.copy(alpha = 0.88f),
-                          contentColor = Color(0xFF14202B),
-                          shadowElevation = 1.dp,
-                      ) {
-                          Text(
-                              text = block.translatedText,
-                              modifier = Modifier.padding(horizontal = 3.dp, vertical = 2.dp),
-                              fontSize = fontSp.sp,
-                              lineHeight = (fontSp * 1.08f).sp,
-                              fontWeight = FontWeight.Medium,
-                              maxLines = 10,
-                              overflow = TextOverflow.Ellipsis,
-                          )
-                      }
-                  }
-              }
-          }
-
-          private fun estimateOverlayFontSp(
-              widthDp: Float,
-              heightDp: Float,
-              translatedText: String,
-              originalText: String,
-          ): Float {
-              val originalLines = (originalText.count { it == '\n' } + 1).coerceAtLeast(1)
-              val geometryLimit = (heightDp / originalLines * 0.62f).coerceIn(8.5f, 22f)
-              val targetHeight = max(heightDp * 1.65f, 14f)
-              val contentLength = translatedText.count { !it.isWhitespace() }.coerceAtLeast(1)
-
-              var size = geometryLimit
-              while (size > 8.5f) {
-                  val estimatedCharWidth = size * 0.54f
-                  val charsPerLine = max(1, (widthDp / estimatedCharWidth).toInt())
-                  val estimatedLines = max(
-                      originalLines,
-                      ceil(contentLength.toDouble() / charsPerLine.toDouble()).toInt(),
-                  )
-                  if (estimatedLines * size * 1.08f <= targetHeight) break
-                  size -= 0.5f
-              }
-              return size.coerceIn(8.5f, 22f)
-          }
-          '''.replace('\n          ', '\n').lstrip())
           PY
 
       - name: Commit B2 overlay
@@ -395,7 +208,6 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add app/build.gradle.kts \
             app/src/main/java/com/ling20/translator/CameraModeScreen.kt \
-            app/src/main/java/com/ling20/translator/CameraTranslationOverlay.kt \
             app/src/main/java/com/ling20/translator/LingApp.kt
-          git commit -m "Add camera translation overlay B2"
+          git commit -m "Wire camera OCR into translation overlay B2"
           git push origin HEAD:main
