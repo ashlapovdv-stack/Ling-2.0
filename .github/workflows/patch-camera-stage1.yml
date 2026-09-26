@@ -20,20 +20,25 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
+
           path = Path('app/src/main/java/com/ling20/translator/LingApp.kt')
           text = path.read_text()
-          old = '''                AppSection.CAMERA -> ComingSoon(
-                    title = "Камера",
-                    description = "Перевод текста со снимка и изображения из галереи будет добавлен следующим этапом.",
-                    camera = true,
-                )'''
-          new = '''                AppSection.CAMERA -> CameraModeScreen(
+          pattern = re.compile(
+              r'AppSection\.CAMERA -> ComingSoon\(\s*'
+              r'title = "Камера",\s*'
+              r'description = "Перевод текста со снимка и изображения из галереи будет добавлен следующим этапом\.",\s*'
+              r'camera = true,\s*'
+              r'\)'
+          )
+          replacement = '''AppSection.CAMERA -> CameraModeScreen(
                     defaultSource = defaultSource.language,
                     defaultTarget = defaultTarget,
                 )'''
-          if old not in text:
-              raise SystemExit('Camera placeholder block not found')
-          path.write_text(text.replace(old, new, 1))
+          patched, count = pattern.subn(replacement, text, count=1)
+          if count != 1:
+              raise SystemExit(f'Camera placeholder replacement count: {count}')
+          path.write_text(patched)
           PY
 
       - name: Commit camera wiring
