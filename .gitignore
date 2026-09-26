@@ -1,0 +1,19 @@
+# Android / Gradle
+.gradle/
+.idea/
+local.properties
+**/build/
+*.iml
+
+# Native build outputs
+.cxx/
+.externalNativeBuild/
+
+# Local neural models
+*.gguf
+*.bin
+models/
+
+# OS files
+.DS_Store
+Thumbs.db
