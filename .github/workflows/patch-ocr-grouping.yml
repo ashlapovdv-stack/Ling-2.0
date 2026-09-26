@@ -1,0 +1,28 @@
+name: Patch OCR grouping refinement
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/scripts/refine_ocr_grouping.py'
+      - '.github/workflows/patch-ocr-grouping.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply grouping patch
+        run: python .github/scripts/refine_ocr_grouping.py
+      - name: Commit grouping refinement
+        run: |
+          git config user.name "Ling CI"
+          git config user.email "actions@github.com"
+          git add app/src/main/java/com/ling20/translator/CameraOcr.kt app/build.gradle.kts
+          git rm .github/scripts/refine_ocr_grouping.py .github/workflows/patch-ocr-grouping.yml
+          git commit -m "Refine OCR block grouping geometry"
+          git push
