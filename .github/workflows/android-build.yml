@@ -40,6 +40,21 @@ jobs:
             "ndk;29.0.14206865" \
             "cmake;3.31.6"
 
+      - name: Bundle offline OCR language data
+        shell: bash
+        run: |
+          set -euo pipefail
+          TESSDATA_COMMIT="87416418657359cb625c412a48b6e1d6d41c29bd"
+          TESSDATA_DIR="app/src/main/assets/tessdata"
+          mkdir -p "$TESSDATA_DIR"
+          for lang in eng rus chi_sim; do
+            curl --fail --location --retry 3 \
+              "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/${TESSDATA_COMMIT}/${lang}.traineddata" \
+              --output "${TESSDATA_DIR}/${lang}.traineddata"
+            test -s "${TESSDATA_DIR}/${lang}.traineddata"
+          done
+          ls -lh "$TESSDATA_DIR"
+
       - name: Prepare stable debug signing
         run: base64 --decode .github/ling-debug-keystore.b64 > app/ling-debug.keystore
 
