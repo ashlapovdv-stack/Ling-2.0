@@ -3,6 +3,21 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val prepareLauncherIcon by tasks.registering {
+    val encodedIcon = layout.projectDirectory.file("src/main/launcher_icon.b64")
+    val outputIcon = layout.projectDirectory.file("src/main/res/drawable-nodpi/ic_launcher.jpg")
+
+    inputs.file(encodedIcon)
+    outputs.file(outputIcon)
+
+    doLast {
+        val outputFile = outputIcon.asFile
+        outputFile.parentFile.mkdirs()
+        val encoded = encodedIcon.asFile.readText().filterNot { it.isWhitespace() }
+        outputFile.writeBytes(java.util.Base64.getDecoder().decode(encoded))
+    }
+}
+
 android {
     namespace = "com.ling20.translator"
     compileSdk = 36
@@ -12,8 +27,8 @@ android {
         applicationId = "com.ling20.translator"
         minSdk = 28
         targetSdk = 36
-        versionCode = 9
-        versionName = "0.1.8"
+        versionCode = 10
+        versionName = "0.1.9"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -86,6 +101,14 @@ android {
             )
         }
     }
+}
+
+tasks.named("preBuild").configure {
+    dependsOn(prepareLauncherIcon)
+}
+
+tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Resources") }.configureEach {
+    dependsOn(prepareLauncherIcon)
 }
 
 dependencies {
