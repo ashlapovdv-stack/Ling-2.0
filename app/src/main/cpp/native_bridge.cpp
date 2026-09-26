@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -57,9 +58,7 @@ std::string token_piece(llama_token token) {
 
     std::vector<char> buffer(static_cast<size_t>(-size));
     size = llama_token_to_piece(g_vocab, token, buffer.data(), buffer.size(), 0, true);
-    if (size < 0) {
-        return {};
-    }
+    if (size < 0) return {};
     return std::string(buffer.data(), size);
 }
 
@@ -67,20 +66,8 @@ std::string apply_chat_template(const std::string & user_prompt) {
     const llama_chat_message message = {"user", user_prompt.c_str()};
     const char * model_template = llama_model_chat_template(g_model, nullptr);
 
-    int32_t required = llama_chat_apply_template(
-        model_template,
-        &message,
-        1,
-        true,
-        nullptr,
-        0
-    );
-
-    // Some GGUFs do not contain a supported chat template. In that case the
-    // translation prompt is still useful as a plain completion prompt.
-    if (required < 0) {
-        return user_prompt;
-    }
+    int32_t required = llama_chat_apply_template(model_template, &message, 1, true, nullptr, 0);
+    if (required < 0) return user_prompt;
 
     std::vector<char> buffer(static_cast<size_t>(required) + 1, '\0');
     int32_t written = llama_chat_apply_template(
@@ -91,10 +78,7 @@ std::string apply_chat_template(const std::string & user_prompt) {
         buffer.data(),
         static_cast<int32_t>(buffer.size())
     );
-
-    if (written < 0) {
-        return user_prompt;
-    }
+    if (written < 0) return user_prompt;
     return std::string(buffer.data(), static_cast<size_t>(written));
 }
 
@@ -108,10 +92,7 @@ std::vector<llama_token> tokenize(const std::string & text) {
         true,
         true
     );
-
-    if (count >= 0) {
-        return {};
-    }
+    if (count >= 0) return {};
 
     count = -count;
     std::vector<llama_token> tokens(static_cast<size_t>(count));
@@ -124,32 +105,22 @@ std::vector<llama_token> tokenize(const std::string & text) {
         true,
         true
     );
-
-    if (written < 0) {
-        return {};
-    }
+    if (written < 0) return {};
     tokens.resize(static_cast<size_t>(written));
     return tokens;
 }
 
 std::string generate_locked(const std::string & raw_prompt, int max_tokens) {
-    if (g_model == nullptr || g_vocab == nullptr) {
-        throw std::runtime_error("Модель не загружена");
-    }
-    if (raw_prompt.empty()) {
-        throw std::runtime_error("Пустой запрос");
-    }
+    if (g_model == nullptr || g_vocab == nullptr) throw std::runtime_error("Модель не загружена");
+    if (raw_prompt.empty()) throw std::runtime_error("Пустой запрос");
 
     max_tokens = std::clamp(max_tokens, 16, 1024);
     const std::string prompt = apply_chat_template(raw_prompt);
     std::vector<llama_token> prompt_tokens = tokenize(prompt);
 
-    if (prompt_tokens.empty()) {
-        throw std::runtime_error("Не удалось токенизировать запрос");
-    }
-
+    if (prompt_tokens.empty()) throw std::runtime_error("Не удалось токенизировать запрос");
     if (prompt_tokens.size() + static_cast<size_t>(max_tokens) + 8 > CONTEXT_SIZE) {
-        throw std::runtime_error("Текст слишком длинный для текущего контекста модели");
+        throw std::runtime_error("Текст слишком длинный для контекста 4096 токенов");
     }
 
     llama_context_params ctx_params = llama_context_default_params();
@@ -162,9 +133,7 @@ std::string generate_locked(const std::string & raw_prompt, int max_tokens) {
     ctx_params.no_perf = true;
 
     llama_context * ctx = llama_init_from_model(g_model, ctx_params);
-    if (ctx == nullptr) {
-        throw std::runtime_error("Не удалось создать контекст llama.cpp");
-    }
+    if (ctx == nullptr) throw std::runtime_error("Не удалось создать контекст llama.cpp");
 
     llama_sampler * sampler = nullptr;
     try {
@@ -180,7 +149,6 @@ std::string generate_locked(const std::string & raw_prompt, int max_tokens) {
         llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.7f));
         llama_sampler_chain_add(sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
 
-        // Prefill in chunks so long prompts do not require a huge n_batch.
         size_t offset = 0;
         while (offset < prompt_tokens.size()) {
             const size_t count = std::min<size_t>(BATCH_SIZE, prompt_tokens.size() - offset);
@@ -196,9 +164,7 @@ std::string generate_locked(const std::string & raw_prompt, int max_tokens) {
 
         for (int generated = 0; generated < max_tokens; ++generated) {
             const llama_token token = llama_sampler_sample(sampler, ctx, -1);
-            if (llama_vocab_is_eog(g_vocab, token)) {
-                break;
-            }
+            if (llama_vocab_is_eog(g_vocab, token)) break;
 
             output += token_piece(token);
 
@@ -222,17 +188,11 @@ std::string generate_locked(const std::string & raw_prompt, int max_tokens) {
 } // namespace
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_ling20_translator_LlamaNative_nativeLoadModel(
-    JNIEnv * env,
-    jobject,
-    jstring model_path
-) {
+Java_com_ling20_translator_LlamaNative_nativeLoadModel(JNIEnv * env, jobject, jstring model_path) {
     std::lock_guard<std::mutex> lock(g_mutex);
     try {
         const std::string path = from_jstring(env, model_path);
-        if (path.empty()) {
-            throw std::runtime_error("Путь к модели пуст");
-        }
+        if (path.empty()) throw std::runtime_error("Путь к модели пуст");
 
         if (!g_backend_initialized) {
             ggml_backend_load_all();
@@ -244,12 +204,10 @@ Java_com_ling20_translator_LlamaNative_nativeLoadModel(
 
         llama_model_params params = llama_model_default_params();
         params.n_gpu_layers = 0;
-        params.use_mmap = true;
+        params.load_mode = LLAMA_LOAD_MODE_MMAP;
 
         g_model = llama_model_load_from_file(path.c_str(), params);
-        if (g_model == nullptr) {
-            throw std::runtime_error("Не удалось открыть GGUF модель");
-        }
+        if (g_model == nullptr) throw std::runtime_error("Не удалось открыть GGUF модель");
 
         g_vocab = llama_model_get_vocab(g_model);
         if (g_vocab == nullptr) {
@@ -264,10 +222,7 @@ Java_com_ling20_translator_LlamaNative_nativeLoadModel(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_ling20_translator_LlamaNative_nativeUnloadModel(
-    JNIEnv *,
-    jobject
-) {
+Java_com_ling20_translator_LlamaNative_nativeUnloadModel(JNIEnv *, jobject) {
     std::lock_guard<std::mutex> lock(g_mutex);
     free_model_locked();
 }
