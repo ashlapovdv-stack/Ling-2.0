@@ -286,11 +286,10 @@ fun LingApp(
                     onClearResult = { output = "" },
                 )
 
-                AppSection.CAMERA -> ComingSoon(
-                    title = "Камера",
-                    description = "Перевод текста со снимка и изображения из галереи будет добавлен следующим этапом.",
-                    camera = true,
-                )
+                AppSection.CAMERA -> CameraModeScreen(
+          defaultSource = defaultSource.language,
+          defaultTarget = defaultTarget,
+      )
 
                 AppSection.DIALOG -> ComingSoon(
                     title = "Диалог",
