@@ -317,6 +317,8 @@ fun LingApp(
                 AppSection.CAMERA -> CameraModeScreen(
                     defaultSource = cameraDefaultSource.language,
                     defaultTarget = cameraDefaultTarget,
+                    engine = engine,
+                    modelReady = engineReady,
                 )
 
                 AppSection.DIALOG -> ComingSoon(

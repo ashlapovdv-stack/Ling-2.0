@@ -96,6 +96,8 @@ private val CameraOverlayStrong = Color(0xE01B2736)
 internal fun CameraModeScreen(
     defaultSource: Language?,
     defaultTarget: Language,
+    engine: LlamaTranslationEngine,
+    modelReady: Boolean,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -120,6 +122,9 @@ internal fun CameraModeScreen(
     var ocrResult by remember { mutableStateOf<CameraOcrResult?>(null) }
     var ocrRunning by remember { mutableStateOf(false) }
     var ocrError by rememberSaveable { mutableStateOf<String?>(null) }
+    var translatedBlocks by remember { mutableStateOf<List<CameraTranslatedBlock>>(emptyList()) }
+    var translationRunning by remember { mutableStateOf(false) }
+    var translationError by rememberSaveable { mutableStateOf<String?>(null) }
 
     val source = CameraSourceLanguage.valueOf(sourceName)
     val target = Language.valueOf(targetName)
@@ -172,6 +177,37 @@ internal fun CameraModeScreen(
         }
     }
 
+    LaunchedEffect(ocrResult, source.language, target, modelReady) {
+        val result = ocrResult
+        translatedBlocks = emptyList()
+        translationError = null
+
+        if (result == null || (result.blocks.isEmpty() && result.lines.isEmpty())) {
+            translationRunning = false
+            return@LaunchedEffect
+        }
+        if (!modelReady || !engine.isReady) {
+            translationRunning = false
+            translationError = "OCR готов. Для перевода загрузите локальную модель."
+            return@LaunchedEffect
+        }
+
+        translationRunning = true
+        runCatching {
+            translateCameraOcrBlocks(
+                engine = engine,
+                result = result,
+                explicitSource = source.language,
+                target = target,
+            )
+        }.onSuccess { translated ->
+            translatedBlocks = translated
+        }.onFailure { error ->
+            translationError = "Ошибка перевода: ${error.message ?: "неизвестная ошибка"}"
+        }
+        translationRunning = false
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -181,10 +217,18 @@ internal fun CameraModeScreen(
             selectedImageUri != null -> {
                 SelectedCameraImage(selectedImageUri!!)
                 ocrResult?.let { result ->
-                    CameraOcrOverlay(
-                        result = result,
-                        modifier = Modifier.fillMaxSize(),
-                    )
+                    if (translatedBlocks.isNotEmpty()) {
+                        CameraTranslationOverlay(
+                            result = result,
+                            translations = translatedBlocks,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    } else {
+                        CameraOcrOverlay(
+                            result = result,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
                 }
             }
 
@@ -281,6 +325,34 @@ internal fun CameraModeScreen(
             )
         }
 
+        if (selectedImageUri != null && (translationRunning || translationError != null)) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 120.dp, start = 18.dp, end = 18.dp),
+                shape = RoundedCornerShape(12.dp),
+                color = if (translationError != null) Color(0xD9B42318) else CameraOverlayStrong,
+                contentColor = Color.White,
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    if (translationRunning) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                            color = Color.White,
+                        )
+                    }
+                    Text(
+                        if (translationRunning) "Перевожу текст на изображении…" else translationError!!,
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
+            }
+        }
         Box(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
