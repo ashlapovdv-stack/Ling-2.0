@@ -63,14 +63,24 @@ std::string token_piece(llama_token token) {
 }
 
 std::string apply_chat_template(const std::string & user_prompt) {
-    const llama_chat_message message = {"user", user_prompt.c_str()};
     const char * model_template = llama_model_chat_template(g_model, nullptr);
+    if (model_template == nullptr || model_template[0] == '\0') {
+        return user_prompt;
+    }
 
-    int32_t required = llama_chat_apply_template(model_template, &message, 1, true, nullptr, 0);
-    if (required < 0) return user_prompt;
+    const llama_chat_message message = {"user", user_prompt.c_str()};
+    const int32_t required = llama_chat_apply_template(
+        model_template,
+        &message,
+        1,
+        true,
+        nullptr,
+        0
+    );
+    if (required <= 0) return user_prompt;
 
     std::vector<char> buffer(static_cast<size_t>(required) + 1, '\0');
-    int32_t written = llama_chat_apply_template(
+    const int32_t written = llama_chat_apply_template(
         model_template,
         &message,
         1,
@@ -78,7 +88,7 @@ std::string apply_chat_template(const std::string & user_prompt) {
         buffer.data(),
         static_cast<int32_t>(buffer.size())
     );
-    if (written < 0) return user_prompt;
+    if (written <= 0) return user_prompt;
     return std::string(buffer.data(), static_cast<size_t>(written));
 }
 
@@ -141,13 +151,12 @@ std::string generate_locked(const std::string & raw_prompt, int max_tokens) {
             throw std::runtime_error("Encoder-decoder модели пока не поддерживаются");
         }
 
+        // Translation should be stable and reproducible. Greedy decoding avoids
+        // creative alternatives and makes repeated translations deterministic.
         llama_sampler_chain_params sampler_params = llama_sampler_chain_default_params();
         sampler_params.no_perf = true;
         sampler = llama_sampler_chain_init(sampler_params);
-        llama_sampler_chain_add(sampler, llama_sampler_init_top_k(20));
-        llama_sampler_chain_add(sampler, llama_sampler_init_top_p(0.8f, 1));
-        llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.7f));
-        llama_sampler_chain_add(sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+        llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
 
         size_t offset = 0;
         while (offset < prompt_tokens.size()) {
