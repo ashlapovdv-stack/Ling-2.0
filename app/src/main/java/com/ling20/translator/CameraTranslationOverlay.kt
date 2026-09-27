@@ -72,12 +72,11 @@ internal suspend fun translateCameraOcrBlocks(
 
         val profile = cameraScriptProfile(clean)
         val source = if (explicitSource != null) {
+            // Explicit source selection should not turn unrelated OCR fragments
+            // (numbers, Latin barcode text, etc.) into Chinese/Russian input.
+            if (!sourceScriptLikelyPresent(profile, explicitSource)) return@mapNotNull null
             explicitSource
         } else {
-            // AUTO is deliberately conservative. OCR frequently confuses Latin
-            // and Cyrillic glyphs on packaging; translating a line that already
-            // contains a meaningful amount of the target script produces the
-            // hallucinated cards seen on the Russian bottle tests.
             if (alreadyLooksLikeTargetLanguage(profile, target)) return@mapNotNull null
             detectCameraBlockLanguage(profile) ?: return@mapNotNull null
         }
@@ -98,115 +97,66 @@ internal suspend fun translateCameraOcrBlocks(
     var lastFailure: Throwable? = null
     var attempted = 0
 
-    candidates.groupBy { it.source }.forEach { (source, group) ->
-        if (source == Language.CHINESE && group.size > 1) {
-            // Translate several spatial bands in ONE marked generation. This keeps
-            // Chinese camera translation bounded to one native generation in the
-            // common case instead of four or more 256-token generations.
-            val spatialGroups = buildChineseSpatialGroups(group)
-            val sourceTexts = spatialGroups.map { chunk ->
-                chunk.joinToString(" • ") { it.text }
-            }
-            attempted += group.size
+    candidates.groupBy { it.source }.forEach { (source, sourceCandidates) ->
+        val groups = buildCameraTranslationGroups(sourceCandidates, source)
+        if (groups.isEmpty()) return@forEach
 
-            var produced = 0
-            runCatching {
+        attempted += sourceCandidates.size
+        val sourceTexts = groups.map { chunk ->
+            chunk.joinToString("\n") { it.text }
+        }
+
+        val batchOutputs: List<String>? = runCatching {
+            if (sourceTexts.size == 1) {
+                listOf(engine.translate(sourceTexts.first(), source, target))
+            } else {
                 engine.translateBatch(
                     texts = sourceTexts,
                     source = source,
                     target = target,
                 )
-            }.onSuccess { outputs ->
-                spatialGroups.zip(outputs).forEach { (chunk, rawOutput) ->
-                    val sourceText = chunk.joinToString(" • ") { it.text }
-                    val output = cleanCameraTranslation(rawOutput)
-                    if (
-                        output.isNotBlank() &&
-                        normalizedCameraText(output) != normalizedCameraText(sourceText)
-                    ) {
-                        val first = chunk.first()
-                        translatedByOrder[first.order] = CameraTranslatedBlock(
-                            rect = unionCameraRects(chunk.map { it.rect }),
-                            originalText = sourceText,
-                            translatedText = output,
-                        )
-                        produced++
-                    }
-                }
-            }.onFailure { error ->
-                lastFailure = error
             }
+        }.onFailure { error ->
+            lastFailure = error
+        }.getOrNull()
 
-            // Some local models occasionally ignore every batch marker. One
-            // ordinary document translation is a bounded fallback and is still
-            // much faster than retrying every OCR line separately.
-            if (produced == 0) {
-                val sourceText = group
-                    .sortedWith(compareBy<CameraTranslationCandidate> { it.rect.top }.thenBy { it.rect.left })
-                    .joinToString(" • ") { it.text }
-                runCatching {
-                    engine.translate(sourceText, source, target).trim()
-                }.onSuccess { rawOutput ->
-                    val output = cleanCameraTranslation(rawOutput)
-                    if (
-                        output.isNotBlank() &&
-                        normalizedCameraText(output) != normalizedCameraText(sourceText)
-                    ) {
-                        val first = group.minBy { it.order }
-                        translatedByOrder[first.order] = CameraTranslatedBlock(
-                            rect = unionCameraRects(group.map { it.rect }),
-                            originalText = sourceText,
-                            translatedText = output,
-                        )
-                    }
-                }.onFailure { error ->
-                    lastFailure = error
-                }
-            }
-        } else if (group.size <= DIRECT_CAMERA_TRANSLATION_LIMIT) {
-            // A couple of display words (for example AQUA / SPRAY) are cheaper
-            // and more reliable as direct translations than as a marker batch.
-            group.forEach { candidate ->
-                attempted++
-                runCatching {
-                    engine.translate(candidate.text, source, target).trim()
-                }.onSuccess { rawOutput ->
-                    val output = cleanCameraTranslation(rawOutput)
-                    if (
-                        output.isNotBlank() &&
-                        normalizedCameraText(output) != normalizedCameraText(candidate.text)
-                    ) {
-                        translatedByOrder[candidate.order] = CameraTranslatedBlock(
-                            rect = Rect(candidate.rect),
-                            originalText = candidate.text,
-                            translatedText = output,
-                        )
-                    }
-                }.onFailure { error ->
-                    lastFailure = error
-                }
-            }
-        } else {
-            attempted += group.size
-            runCatching {
-                engine.translateBatch(
-                    texts = group.map { it.text },
-                    source = source,
-                    target = target,
+        val unresolved = mutableListOf<Int>()
+        groups.forEachIndexed { index, chunk ->
+            val sourceText = sourceTexts[index]
+            val output = batchOutputs
+                ?.getOrNull(index)
+                ?.let(::cleanCameraTranslation)
+                .orEmpty()
+
+            if (isUsableCameraTranslation(output, sourceText, target)) {
+                addTranslatedChunk(
+                    destination = translatedByOrder,
+                    chunk = chunk,
+                    sourceText = sourceText,
+                    output = output,
                 )
-            }.onSuccess { outputs ->
-                group.zip(outputs).forEach { (candidate, rawOutput) ->
-                    val output = cleanCameraTranslation(rawOutput)
-                    if (
-                        output.isNotBlank() &&
-                        normalizedCameraText(output) != normalizedCameraText(candidate.text)
-                    ) {
-                        translatedByOrder[candidate.order] = CameraTranslatedBlock(
-                            rect = Rect(candidate.rect),
-                            originalText = candidate.text,
-                            translatedText = output,
-                        )
-                    }
+            } else {
+                unresolved += index
+            }
+        }
+
+        // Batch markers are not fully reliable with small local models. Retry only
+        // the rejected spatial groups, never every OCR line. This gives Chinese a
+        // real translation fallback without returning to dozens of generations.
+        unresolved.forEach { index ->
+            val chunk = groups[index]
+            val sourceText = sourceTexts[index]
+            runCatching {
+                engine.translate(sourceText, source, target).trim()
+            }.onSuccess { rawOutput ->
+                val output = cleanCameraTranslation(rawOutput)
+                if (isUsableCameraTranslation(output, sourceText, target)) {
+                    addTranslatedChunk(
+                        destination = translatedByOrder,
+                        chunk = chunk,
+                        sourceText = sourceText,
+                        output = output,
+                    )
                 }
             }.onFailure { error ->
                 lastFailure = error
@@ -230,17 +180,52 @@ internal suspend fun translateCameraOcrBlocks(
     }
 }
 
-private fun buildChineseSpatialGroups(
+private fun addTranslatedChunk(
+    destination: MutableMap<Int, CameraTranslatedBlock>,
+    chunk: List<CameraTranslationCandidate>,
+    sourceText: String,
+    output: String,
+) {
+    if (chunk.isEmpty()) return
+    val first = chunk.minBy { it.order }
+    destination[first.order] = CameraTranslatedBlock(
+        rect = unionCameraRects(chunk.map { it.rect }),
+        originalText = sourceText,
+        translatedText = output,
+    )
+}
+
+private fun buildCameraTranslationGroups(
     candidates: List<CameraTranslationCandidate>,
+    source: Language,
 ): List<List<CameraTranslationCandidate>> {
     val sorted = candidates.sortedWith(
         compareBy<CameraTranslationCandidate> { it.rect.top }.thenBy { it.rect.left },
     )
-    val targetGroupCount = ceil(sorted.size / CHINESE_LINES_PER_OVERLAY_GROUP.toDouble())
-        .toInt()
-        .coerceIn(1, CHINESE_MAX_OVERLAY_GROUPS)
-    val chunkSize = ceil(sorted.size / targetGroupCount.toDouble()).toInt().coerceAtLeast(1)
-    return sorted.chunked(chunkSize)
+    if (sorted.isEmpty()) return emptyList()
+
+    if (looksLikeShortDisplayStack(sorted, source)) {
+        return listOf(sorted)
+    }
+
+    val linesPerGroup = when {
+        source == Language.CHINESE -> CHINESE_LINES_PER_OVERLAY_GROUP
+        sorted.size >= DENSE_TEXT_LINE_THRESHOLD -> DENSE_LINES_PER_OVERLAY_GROUP
+        else -> 1
+    }
+    return sorted.chunked(linesPerGroup)
+}
+
+private fun looksLikeShortDisplayStack(
+    candidates: List<CameraTranslationCandidate>,
+    source: Language,
+): Boolean {
+    if (source != Language.ENGLISH || candidates.size !in 2..4) return false
+    return candidates.all { candidate ->
+        val letters = candidate.text.count(Char::isLetter)
+        val words = candidate.text.split(Regex("\\s+")).count { it.any(Char::isLetter) }
+        letters in 3..14 && words <= 2
+    }
 }
 
 private fun unionCameraRects(rects: List<Rect>): Rect {
@@ -264,6 +249,15 @@ private fun cameraScriptProfile(text: String): CameraScriptProfile {
     return CameraScriptProfile(cyrillic = cyrillic, latin = latin, han = han)
 }
 
+private fun sourceScriptLikelyPresent(
+    profile: CameraScriptProfile,
+    source: Language,
+): Boolean = when (source) {
+    Language.RUSSIAN -> profile.cyrillic >= 2
+    Language.ENGLISH -> profile.latin >= 2 && profile.han == 0
+    Language.CHINESE -> profile.han >= 1
+}
+
 private fun alreadyLooksLikeTargetLanguage(
     profile: CameraScriptProfile,
     target: Language,
@@ -279,19 +273,14 @@ private fun alreadyLooksLikeTargetLanguage(
 private fun detectCameraBlockLanguage(profile: CameraScriptProfile): Language? {
     if (profile.letters == 0) return null
 
-    // Han is distinctive enough that a small amount of Latin OCR noise should
-    // not turn a Chinese line into English.
     if (profile.han >= 1 && profile.han * 2 >= max(profile.latin, profile.cyrillic)) {
         return Language.CHINESE
     }
 
-    // Any substantial Cyrillic presence wins over visually-similar Latin OCR.
     if (profile.cyrillic >= 2 && profile.cyrillic * 2 >= profile.latin) {
         return Language.RUSSIAN
     }
 
-    // AUTO only translates English when the line is cleanly Latin. Mixed-script
-    // packaging text is safer left untouched than mistranslated.
     if (profile.latin >= 2 && profile.cyrillic == 0 && profile.han == 0) {
         return Language.ENGLISH
     }
@@ -319,15 +308,38 @@ private fun looksLikeAutoOcrNoise(text: String, source: Language): Boolean {
     val letters = text.filter(Char::isLetter)
     if (letters.isEmpty()) return true
 
-    // Long all-caps pseudo-Latin tokens such as AKBA-KPEM are commonly Russian
-    // Cyrillic text misread by the Latin OCR pass. Short display words AQUA and
-    // SPRAY remain eligible for translation.
     val longAllCapsToken =
         !text.any(Char::isWhitespace) && letters.length > 5 && letters.all(Char::isUpperCase)
     val alphaNumericFragment =
         text.any(Char::isDigit) && letters.length <= 8 && !text.any(Char::isWhitespace)
 
     return longAllCapsToken || alphaNumericFragment
+}
+
+private fun isUsableCameraTranslation(
+    output: String,
+    sourceText: String,
+    target: Language,
+): Boolean {
+    if (output.isBlank()) return false
+    if (normalizedCameraText(output) == normalizedCameraText(sourceText)) return false
+
+    val profile = cameraScriptProfile(output)
+    if (profile.letters == 0) return false
+
+    return when (target) {
+        Language.RUSSIAN ->
+            profile.cyrillic >= 2 &&
+                profile.cyrillic >= profile.latin &&
+                profile.cyrillic * 2 >= profile.han
+        Language.ENGLISH ->
+            profile.latin >= 2 &&
+                profile.latin >= profile.cyrillic * 2 &&
+                profile.han == 0
+        Language.CHINESE ->
+            profile.han >= 1 &&
+                profile.han >= max(profile.latin, profile.cyrillic)
+    }
 }
 
 private fun cleanCameraTranslation(text: String): String = text
@@ -407,13 +419,13 @@ internal fun CameraTranslationOverlay(
                     .width(width)
                     .heightIn(min = minHeight, max = maxHeight),
                 shape = RoundedCornerShape(5.dp),
-                color = Color.White.copy(alpha = 0.92f),
+                color = Color.White.copy(alpha = 0.94f),
                 contentColor = Color(0xFF14202B),
                 shadowElevation = 1.dp,
             ) {
                 Text(
                     text = block.translatedText,
-                    modifier = Modifier.padding(horizontal = 3.dp, vertical = 2.dp),
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
                     fontSize = fontSp.sp,
                     lineHeight = (fontSp * 1.06f).sp,
                     fontWeight = FontWeight.Medium,
@@ -450,16 +462,16 @@ private fun estimateOverlayFontSp(
 }
 
 private const val MIN_CAMERA_TRANSLATION_CONFIDENCE = 8f
-private const val DIRECT_CAMERA_TRANSLATION_LIMIT = 4
-private const val CHINESE_LINES_PER_OVERLAY_GROUP = 8
-private const val CHINESE_MAX_OVERLAY_GROUPS = 4
-private const val CARD_WIDTH_EXPANSION = 1.12f
-private const val CARD_MAX_IMAGE_WIDTH_FRACTION = 0.68f
-private const val CARD_MAX_HEIGHT_FACTOR = 1.20f
-private const val CARD_MAX_LINES = 5
+private const val CHINESE_LINES_PER_OVERLAY_GROUP = 4
+private const val DENSE_TEXT_LINE_THRESHOLD = 7
+private const val DENSE_LINES_PER_OVERLAY_GROUP = 3
+private const val CARD_WIDTH_EXPANSION = 1.10f
+private const val CARD_MAX_IMAGE_WIDTH_FRACTION = 0.72f
+private const val CARD_MAX_HEIGHT_FACTOR = 1.25f
+private const val CARD_MAX_LINES = 6
 private const val MIN_CARD_HEIGHT_DP = 13f
-private const val MAX_MIN_CARD_HEIGHT_DP = 38f
-private const val CARD_ABSOLUTE_MAX_HEIGHT_DP = 112f
+private const val MAX_MIN_CARD_HEIGHT_DP = 44f
+private const val CARD_ABSOLUTE_MAX_HEIGHT_DP = 104f
 private const val FONT_GEOMETRY_HEIGHT_CAP_DP = 28f
 private const val MIN_FONT_SP = 8.0f
 private const val MAX_FONT_SP = 16.0f
