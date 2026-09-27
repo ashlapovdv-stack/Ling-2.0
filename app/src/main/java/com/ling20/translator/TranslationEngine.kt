@@ -9,6 +9,12 @@ interface TranslationEngine {
         source: Language,
         target: Language,
     ): String
+
+    fun translateBatch(
+        texts: List<String>,
+        source: Language,
+        target: Language,
+    ): List<String> = texts.map { text -> translate(text, source, target) }
 }
 
 class LlamaTranslationEngine : TranslationEngine {
@@ -63,6 +69,112 @@ class LlamaTranslationEngine : TranslationEngine {
                 }
             }
             .trimEnd()
+    }
+
+    override fun translateBatch(
+        texts: List<String>,
+        source: Language,
+        target: Language,
+    ): List<String> {
+        check(ready) { "Локальная модель не загружена" }
+        require(source != target) { "Исходный язык и язык перевода должны отличаться" }
+        if (texts.isEmpty()) return emptyList()
+        if (texts.size == 1) return listOf(translate(texts.first(), source, target))
+
+        val output = mutableListOf<String>()
+        val batch = mutableListOf<String>()
+        var batchCharacters = 0
+
+        fun flushBatch() {
+            if (batch.isEmpty()) return
+            output += if (batch.size == 1) {
+                listOf(translate(batch.first(), source, target))
+            } else {
+                translateBatchChunk(batch.toList(), source, target)
+            }
+            batch.clear()
+            batchCharacters = 0
+        }
+
+        texts.forEach { raw ->
+            val text = raw.trim()
+            require(text.isNotBlank()) { "Введите текст для перевода" }
+            val wouldOverflow = batch.isNotEmpty() &&
+                (batch.size >= BATCH_MAX_ITEMS || batchCharacters + text.length > BATCH_MAX_CHARACTERS)
+            if (wouldOverflow) flushBatch()
+            batch += text
+            batchCharacters += text.length
+        }
+        flushBatch()
+        return output
+    }
+
+    private fun translateBatchChunk(
+        texts: List<String>,
+        source: Language,
+        target: Language,
+    ): List<String> {
+        val prompt = buildBatchPrompt(texts, source, target)
+        val sourcePayload = texts.joinToString(" ")
+        val maxTokens = outputTokenBudget(sourcePayload, target)
+        val raw = LlamaNative.generate(prompt, maxTokens)
+        val cleaned = cleanModelOutput(raw)
+        val parsed = parseBatchOutput(cleaned, texts.size)
+        if (parsed != null) return parsed
+
+        // Marker-preserving batch output is normally reliable, but a model can
+        // occasionally ignore the requested format. Fall back only in that rare
+        // case so correctness wins without making every camera line a generation.
+        return texts.map { text -> translate(text, source, target) }
+    }
+
+    private fun buildBatchPrompt(
+        texts: List<String>,
+        source: Language,
+        target: Language,
+    ): String {
+        val payload = texts.mapIndexed { index, text ->
+            "[[LING_$index]] $text"
+        }.joinToString("\n")
+
+        return if (usesTranslateGemmaPrompt()) {
+            """
+                You are a professional ${source.promptName} (${source.code}) to ${target.promptName} (${target.code}) translator.
+                Translate every labeled item below into ${target.promptName}.
+                Keep every [[LING_n]] marker exactly unchanged and in the same order.
+                Return exactly one translated item for every marker. Do not merge, omit, reorder, explain, or add commentary.
+                Format each result as: [[LING_n]] translated text
+
+                $payload
+            """.trimIndent()
+        } else {
+            """
+                You are an offline translation engine.
+                Translate every labeled item from ${source.promptName} to ${target.promptName}.
+                Keep every [[LING_n]] marker exactly unchanged and in the same order.
+                Return exactly one translated item for every marker. Do not merge, omit, reorder, explain, summarize, or add alternatives.
+                Preserve names, numbers and punctuation where reasonable.
+                /no_think
+
+                $payload
+            """.trimIndent()
+        }
+    }
+
+    private fun parseBatchOutput(raw: String, expectedCount: Int): List<String>? {
+        val matches = BATCH_MARKER_REGEX.findAll(raw).toList()
+        if (matches.isEmpty()) return null
+
+        val parsed = mutableMapOf<Int, String>()
+        matches.forEach { match ->
+            val index = match.groupValues[1].toIntOrNull() ?: return@forEach
+            val value = match.groupValues[2].trim()
+            if (index in 0 until expectedCount && value.isNotBlank()) {
+                parsed[index] = value
+            }
+        }
+        if (parsed.size != expectedCount) return null
+        return (0 until expectedCount).map { index -> parsed[index] ?: return null }
     }
 
     private fun translateChunk(text: String, source: Language, target: Language): String {
@@ -145,7 +257,12 @@ class LlamaTranslationEngine : TranslationEngine {
         // chunk leaves comfortable room for its required translation instruction.
         const val TRANSLATEGEMMA_CHUNK_CHAR_LIMIT = 700
         const val MAX_OUTPUT_TOKENS = 1792
+        const val BATCH_MAX_ITEMS = 8
+        const val BATCH_MAX_CHARACTERS = 620
         val SENTENCE_ENDINGS = charArrayOf('.', '!', '?', '。', '！', '？', ';', ':')
+        val BATCH_MARKER_REGEX = Regex(
+            "(?s)\\[\\[LING_(\\d+)]]\\s*(.*?)(?=(?:\\r?\\n)?\\s*\\[\\[LING_\\d+]]|\\z)",
+        )
     }
 }
 
