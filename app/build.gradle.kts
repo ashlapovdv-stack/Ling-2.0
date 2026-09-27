@@ -29,8 +29,8 @@ android {
         applicationId = "com.ling20.translator"
         minSdk = 28
         targetSdk = 36
-        versionCode = 28
-        versionName = "0.1.16.1"
+        versionCode = 29
+        versionName = "0.1.16.2"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -114,8 +114,6 @@ tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Resources") }.
 }
 
 dependencies {
-    // Compose 1.9 is kept deliberately for stable compileSdk 36 support.
-    // Compose 1.12+ requires compileSdk 37.
     val composeBom = platform("androidx.compose:compose-bom:2025.08.00")
     implementation(composeBom)
 
@@ -132,13 +130,7 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:$cameraX")
     implementation("androidx.camera:camera-view:$cameraX")
 
-    // Tesseract 5.5.1 wrapper. OCR models are bundled as assets by CI, so
-    // recognition remains fully offline at runtime.
     implementation("com.github.adaptech-cz.Tesseract4Android:tesseract4android:4.9.0")
-
-    // Bundled ML Kit models are packaged in the APK and work without network.
-    // Latin complements Tesseract on decorative English headings; Chinese is
-    // enabled for Auto/Chinese camera OCR.
     implementation("com.google.mlkit:text-recognition:16.0.1")
     implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
 

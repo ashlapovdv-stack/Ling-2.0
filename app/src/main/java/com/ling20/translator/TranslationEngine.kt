@@ -55,8 +55,6 @@ class LlamaTranslationEngine : TranslationEngine {
             DEFAULT_CHUNK_CHAR_LIMIT
         }
 
-        // Long text is translated in natural chunks so one generation cannot stop
-        // before the end of the original input. Existing line breaks are preserved.
         return text
             .split('\n')
             .joinToString("\n") { line ->
@@ -116,16 +114,17 @@ class LlamaTranslationEngine : TranslationEngine {
     ): List<String> {
         val prompt = buildBatchPrompt(texts, source, target)
         val sourcePayload = texts.joinToString(" ")
-        val maxTokens = outputTokenBudget(sourcePayload, target)
+        val maxTokens = batchOutputTokenBudget(sourcePayload, target)
         val raw = LlamaNative.generate(prompt, maxTokens)
         val cleaned = cleanModelOutput(raw)
-        val parsed = parseBatchOutput(cleaned, texts.size)
-        if (parsed != null) return parsed
 
-        // Marker-preserving batch output is normally reliable, but a model can
-        // occasionally ignore the requested format. Fall back only in that rare
-        // case so correctness wins without making every camera line a generation.
-        return texts.map { text -> translate(text, source, target) }
+        parseBatchOutput(cleaned, texts.size)?.let { return it }
+        parseLooseBatchOutput(cleaned, texts)?.let { return it }
+
+        // Keep unchanged items here; CameraTranslationOverlay performs a compact
+        // grouped fallback for unresolved OCR items instead of exploding into one
+        // native generation per line.
+        return texts
     }
 
     private fun buildBatchPrompt(
@@ -177,6 +176,34 @@ class LlamaTranslationEngine : TranslationEngine {
         return (0 until expectedCount).map { index -> parsed[index] ?: return null }
     }
 
+    private fun parseLooseBatchOutput(raw: String, originals: List<String>): List<String>? {
+        val matches = BATCH_MARKER_REGEX.findAll(raw).toList()
+        if (matches.isNotEmpty()) {
+            val result = originals.toMutableList()
+            var accepted = 0
+            matches.forEach { match ->
+                val index = match.groupValues[1].toIntOrNull() ?: return@forEach
+                val value = match.groupValues[2].trim()
+                if (index in result.indices && value.isNotBlank()) {
+                    result[index] = value
+                    accepted++
+                }
+            }
+            if (accepted > 0) return result
+        }
+
+        val lines = raw
+            .lines()
+            .map(String::trim)
+            .filter(String::isNotBlank)
+        if (lines.size != originals.size) return null
+
+        return lines.map { line ->
+            val stripped = line.replace(BATCH_LINE_PREFIX_REGEX, "").trim()
+            stripped.ifBlank { line }
+        }
+    }
+
     private fun translateChunk(text: String, source: Language, target: Language): String {
         val prompt = if (usesTranslateGemmaPrompt()) {
             TranslateGemmaPrompt.build(text, source, target)
@@ -194,15 +221,21 @@ class LlamaTranslationEngine : TranslationEngine {
         modelName?.contains("translategemma", ignoreCase = true) == true
 
     private fun outputTokenBudget(text: String, target: Language): Int {
-        // Character count intentionally overestimates the required token budget.
-        // This is especially important for Chinese -> Russian/English, where the
-        // translated text can expand significantly in characters.
         val estimated = when (target) {
             Language.RUSSIAN -> text.length * 3 / 2 + 256
             Language.ENGLISH -> text.length * 5 / 4 + 224
             Language.CHINESE -> text.length + 224
         }
         return estimated.coerceIn(256, MAX_OUTPUT_TOKENS)
+    }
+
+    private fun batchOutputTokenBudget(text: String, target: Language): Int {
+        val estimated = when (target) {
+            Language.RUSSIAN -> text.length * 3 / 2 + 128
+            Language.ENGLISH -> text.length * 5 / 4 + 112
+            Language.CHINESE -> text.length + 112
+        }
+        return estimated.coerceIn(BATCH_MIN_OUTPUT_TOKENS, BATCH_MAX_OUTPUT_TOKENS)
     }
 
     private fun splitLongLine(line: String, chunkLimit: Int): List<String> {
@@ -215,8 +248,6 @@ class LlamaTranslationEngine : TranslationEngine {
             val minPreferredBreak = chunkLimit * 2 / 3
             var breakAt = -1
 
-            // Prefer ending a chunk at sentence punctuation or whitespace near
-            // the limit so each request remains a natural translation unit.
             for (index in chunkLimit downTo minPreferredBreak) {
                 val previous = remaining[index - 1]
                 val current = remaining[index]
@@ -253,15 +284,19 @@ class LlamaTranslationEngine : TranslationEngine {
 
     private companion object {
         const val DEFAULT_CHUNK_CHAR_LIMIT = 1000
-        // TranslateGemma's documented input context is 2K tokens. The smaller
-        // chunk leaves comfortable room for its required translation instruction.
         const val TRANSLATEGEMMA_CHUNK_CHAR_LIMIT = 700
         const val MAX_OUTPUT_TOKENS = 1792
-        const val BATCH_MAX_ITEMS = 8
-        const val BATCH_MAX_CHARACTERS = 620
+        const val BATCH_MAX_ITEMS = 16
+        const val BATCH_MAX_CHARACTERS = 760
+        const val BATCH_MIN_OUTPUT_TOKENS = 160
+        const val BATCH_MAX_OUTPUT_TOKENS = 1024
         val SENTENCE_ENDINGS = charArrayOf('.', '!', '?', '。', '！', '？', ';', ':')
         val BATCH_MARKER_REGEX = Regex(
             "(?s)\\[\\[LING_(\\d+)]]\\s*(.*?)(?=(?:\\r?\\n)?\\s*\\[\\[LING_\\d+]]|\\z)",
+        )
+        val BATCH_LINE_PREFIX_REGEX = Regex(
+            "^\\s*(?:\\[\\[LING_\\d+]]\\s*|(?:LING_)?\\d+\\s*[:.)-]\\s*)",
+            RegexOption.IGNORE_CASE,
         )
     }
 }
@@ -291,11 +326,6 @@ object TranslationPrompt {
 }
 
 object TranslateGemmaPrompt {
-    /**
-     * TranslateGemma was trained with this dedicated translation instruction.
-     * The model-specific prompt is intentionally separate from the generic Qwen
-     * prompt and includes both human-readable language names and ISO codes.
-     */
     fun build(text: String, source: Language, target: Language): String = """
         You are a professional ${source.promptName} (${source.code}) to ${target.promptName} (${target.code}) translator. Your goal is to accurately convey the meaning and nuances of the original ${source.promptName} text while adhering to ${target.promptName} grammar, vocabulary, and cultural sensitivities.
         Produce only the ${target.promptName} translation, without any additional explanations or commentary. Please translate the following ${source.promptName} text into ${target.promptName}:
