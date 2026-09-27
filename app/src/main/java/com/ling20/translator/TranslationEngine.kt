@@ -49,6 +49,8 @@ class LlamaTranslationEngine : TranslationEngine {
         require(text.isNotBlank()) { "Введите текст для перевода" }
         require(source != target) { "Исходный язык и язык перевода должны отличаться" }
 
+        fastKnownTranslation(text, source, target)?.let { return it }
+
         val chunkLimit = if (usesTranslateGemmaPrompt()) {
             TRANSLATEGEMMA_CHUNK_CHAR_LIMIT
         } else {
@@ -135,13 +137,16 @@ class LlamaTranslationEngine : TranslationEngine {
         val payload = texts.mapIndexed { index, text ->
             "[[LING_$index]] $text"
         }.joinToString("\n")
+        val meaningInstruction = meaningFirstInstruction(source, target)
 
         return if (usesTranslateGemmaPrompt()) {
             """
                 You are a professional ${source.promptName} (${source.code}) to ${target.promptName} (${target.code}) translator.
                 Translate every labeled item below into ${target.promptName}.
+                $meaningInstruction
                 Keep every [[LING_n]] marker exactly unchanged and in the same order.
-                Return exactly one translated item for every marker. Do not merge, omit, reorder, explain, or add commentary.
+                Return exactly one translated item for every marker. Put each result on one physical line.
+                Do not merge, omit, reorder, explain, summarize, or add commentary.
                 Format each result as: [[LING_n]] translated text
 
                 $payload
@@ -150,9 +155,11 @@ class LlamaTranslationEngine : TranslationEngine {
             """
                 You are an offline translation engine.
                 Translate every labeled item from ${source.promptName} to ${target.promptName}.
+                $meaningInstruction
                 Keep every [[LING_n]] marker exactly unchanged and in the same order.
-                Return exactly one translated item for every marker. Do not merge, omit, reorder, explain, summarize, or add alternatives.
-                Preserve names, numbers and punctuation where reasonable.
+                Return exactly one translated item for every marker. Put each result on one physical line.
+                Do not merge, omit, reorder, explain, summarize, or add alternatives.
+                Preserve brands, names, numbers and punctuation where reasonable.
                 /no_think
 
                 $payload
@@ -222,18 +229,18 @@ class LlamaTranslationEngine : TranslationEngine {
 
     private fun outputTokenBudget(text: String, target: Language): Int {
         val estimated = when (target) {
-            Language.RUSSIAN -> text.length * 3 / 2 + 256
-            Language.ENGLISH -> text.length * 5 / 4 + 224
-            Language.CHINESE -> text.length + 224
+            Language.RUSSIAN -> text.length * 3 / 2 + 96
+            Language.ENGLISH -> text.length * 5 / 4 + 80
+            Language.CHINESE -> text.length + 64
         }
-        return estimated.coerceIn(256, MAX_OUTPUT_TOKENS)
+        return estimated.coerceIn(MIN_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS)
     }
 
     private fun batchOutputTokenBudget(text: String, target: Language): Int {
         val estimated = when (target) {
-            Language.RUSSIAN -> text.length * 3 / 2 + 128
-            Language.ENGLISH -> text.length * 5 / 4 + 112
-            Language.CHINESE -> text.length + 112
+            Language.RUSSIAN -> text.length * 3 / 2 + 64
+            Language.ENGLISH -> text.length * 5 / 4 + 56
+            Language.CHINESE -> text.length + 48
         }
         return estimated.coerceIn(BATCH_MIN_OUTPUT_TOKENS, BATCH_MAX_OUTPUT_TOKENS)
     }
@@ -282,14 +289,53 @@ class LlamaTranslationEngine : TranslationEngine {
         return result
     }
 
+    private fun fastKnownTranslation(
+        text: String,
+        source: Language,
+        target: Language,
+    ): String? {
+        val key = text
+            .uppercase()
+            .replace('Ё', 'Е')
+            .replace(Regex("[-_/\\n\\r]+"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+
+        return when (source to target) {
+            Language.ENGLISH to Language.RUSSIAN -> when (key) {
+                "AQUA SPRAY" -> "ВОДНЫЙ СПРЕЙ"
+                "AQUA" -> "ВОДА"
+                "SPRAY" -> "СПРЕЙ"
+                "MOISTURIZING" -> "УВЛАЖНЯЮЩИЙ"
+                "HYALURONIC ACID" -> "ГИАЛУРОНОВАЯ КИСЛОТА"
+                else -> null
+            }
+            Language.RUSSIAN to Language.ENGLISH -> when (key) {
+                "АКВА СПРЕЙ", "ВОДНЫЙ СПРЕЙ" -> "AQUA SPRAY"
+                "УВЛАЖНЯЮЩИЙ" -> "MOISTURIZING"
+                "ГИАЛУРОНОВАЯ КИСЛОТА", "ГИАЛУРОНОВОЙ КИСЛОТОЙ" -> "HYALURONIC ACID"
+                else -> null
+            }
+            else -> null
+        }
+    }
+
+    private fun meaningFirstInstruction(source: Language, target: Language): String = buildString {
+        append("Translate meaning, not spelling. Do not transliterate ordinary words or product descriptors; transliterate only proper names or brands when necessary.")
+        if (source == Language.ENGLISH && target == Language.RUSSIAN) {
+            append(" For example, AQUA SPRAY means ВОДНЫЙ СПРЕЙ, not АКВА СПРИЙ.")
+        }
+    }
+
     private companion object {
         const val DEFAULT_CHUNK_CHAR_LIMIT = 1000
         const val TRANSLATEGEMMA_CHUNK_CHAR_LIMIT = 700
+        const val MIN_OUTPUT_TOKENS = 96
         const val MAX_OUTPUT_TOKENS = 1792
-        const val BATCH_MAX_ITEMS = 16
-        const val BATCH_MAX_CHARACTERS = 760
-        const val BATCH_MIN_OUTPUT_TOKENS = 160
-        const val BATCH_MAX_OUTPUT_TOKENS = 1024
+        const val BATCH_MAX_ITEMS = 8
+        const val BATCH_MAX_CHARACTERS = 480
+        const val BATCH_MIN_OUTPUT_TOKENS = 96
+        const val BATCH_MAX_OUTPUT_TOKENS = 320
         val SENTENCE_ENDINGS = charArrayOf('.', '!', '?', '。', '！', '？', ';', ':')
         val BATCH_MARKER_REGEX = Regex(
             "(?s)\\[\\[LING_(\\d+)]]\\s*(.*?)(?=(?:\\r?\\n)?\\s*\\[\\[LING_\\d+]]|\\z)",
@@ -311,26 +357,44 @@ object ModelNotLoadedEngine : TranslationEngine {
 }
 
 object TranslationPrompt {
-    fun build(text: String, source: Language, target: Language): String = """
-        You are an offline translation engine.
-        Translate the text from ${source.promptName} to ${target.promptName}.
-        Translate the entire supplied text from the first character to the last; do not stop early.
-        Return only the translation. Do not explain, comment, summarize, or provide alternatives.
-        Preserve names, numbers, punctuation, tone, and line breaks where reasonable.
-        Do not answer the text as a question; translate it literally and naturally.
-        /no_think
+    fun build(text: String, source: Language, target: Language): String {
+        val meaningInstruction = buildString {
+            append("Translate meaning, not spelling. Do not transliterate ordinary words or product descriptors; transliterate only proper names or brands when necessary.")
+            if (source == Language.ENGLISH && target == Language.RUSSIAN) {
+                append(" Example: AQUA SPRAY means ВОДНЫЙ СПРЕЙ, not АКВА СПРИЙ.")
+            }
+        }
+        return """
+            You are an offline translation engine.
+            Translate the text from ${source.promptName} to ${target.promptName}.
+            Translate the entire supplied text from the first character to the last; do not stop early.
+            $meaningInstruction
+            Return only the translation. Do not explain, comment, summarize, or provide alternatives.
+            Preserve brands, names, numbers, punctuation, tone, and line breaks where reasonable.
+            Do not answer the text as a question; translate it literally and naturally.
+            /no_think
 
-        Text to translate:
-        $text
-    """.trimIndent()
+            Text to translate:
+            $text
+        """.trimIndent()
+    }
 }
 
 object TranslateGemmaPrompt {
-    fun build(text: String, source: Language, target: Language): String = """
-        You are a professional ${source.promptName} (${source.code}) to ${target.promptName} (${target.code}) translator. Your goal is to accurately convey the meaning and nuances of the original ${source.promptName} text while adhering to ${target.promptName} grammar, vocabulary, and cultural sensitivities.
-        Produce only the ${target.promptName} translation, without any additional explanations or commentary. Please translate the following ${source.promptName} text into ${target.promptName}:
+    fun build(text: String, source: Language, target: Language): String {
+        val meaningInstruction = buildString {
+            append("Translate meaning, not spelling. Do not transliterate ordinary words or product descriptors; transliterate only proper names or brands when necessary.")
+            if (source == Language.ENGLISH && target == Language.RUSSIAN) {
+                append(" Example: AQUA SPRAY means ВОДНЫЙ СПРЕЙ, not АКВА СПРИЙ.")
+            }
+        }
+        return """
+            You are a professional ${source.promptName} (${source.code}) to ${target.promptName} (${target.code}) translator. Your goal is to accurately convey the meaning and nuances of the original ${source.promptName} text while adhering to ${target.promptName} grammar, vocabulary, and cultural sensitivities.
+            $meaningInstruction
+            Produce only the ${target.promptName} translation, without any additional explanations or commentary. Please translate the following ${source.promptName} text into ${target.promptName}:
 
 
-        $text
-    """.trimIndent()
+            $text
+        """.trimIndent()
+    }
 }
