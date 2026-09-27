@@ -29,8 +29,8 @@ android {
         applicationId = "com.ling20.translator"
         minSdk = 28
         targetSdk = 36
-        versionCode = 33
-        versionName = "0.1.16.6"
+        versionCode = 34
+        versionName = "0.1.16.7"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
